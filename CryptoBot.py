@@ -12,7 +12,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ============================================================================
-# КОНФИГУРАЦИЯ
+# КОНФИГУРАЦИЯ (ТВОИ ТОКЕНЫ ВСТАВЛЕНЫ)
 # ============================================================================
 
 @dataclass
@@ -20,7 +20,7 @@ class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
     CRYPTOPAY_API_KEY: str = "556863:AAPMuBD5NBKWHSfsntXlARm1hZ52BCbQXMF"
     ADMIN_ID: int = 8780917575
-    BOT_USERNAME: str = "CryptoKan_bot"
+    BOT_USERNAME: str = "CryptoKanS1x_bot"
     
     WITHDRAW_FEE: int = 5
     REFERRAL_PERCENT: int = 5
@@ -28,9 +28,9 @@ class Config:
     REFERRAL_BONUS: float = 50
     LOTTERY_COST: float = 100
     
-    MKN_TO_USDT: float = 0.001  # 1 MKN = 0.001 USDT
-    MIN_MKN_SWAP: float = 500   # Минимум 500 MKN для обмена
-    MIN_WITHDRAW: float = 1.1   # Минимум 1.1 USDT для вывода
+    MKN_TO_USDT: float = 0.001
+    MIN_MKN_SWAP: float = 500
+    MIN_WITHDRAW: float = 1.1
     
     LOTTERY_MULTIPLIERS: Dict[int, int] = None
     RATES: Dict[str, float] = None
@@ -334,6 +334,8 @@ def create_invoice(amount: float, user_id: int, currency: str = "USDT") -> Tuple
             result = json.loads(response.read().decode())
             if result.get("ok"):
                 return result["result"]["pay_url"], str(result["result"]["invoice_id"])
+            else:
+                print(f"CryptoBot error: {result}")
     except Exception as e:
         print(f"Create invoice error: {e}")
     return None, None
@@ -415,7 +417,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             balance_text += f"💰 {c}: `{balances[c]:.4f}`\n"
     balance_text += f"\n👥 Рефералов: {db.get_referral_count(user_id)}"
-    balance_text += f"\n💎 1 MKN = {CONFIG.MKN_TO_USDT} USDT (мин. обмен 500 MKN)"
+    balance_text += f"\n💎 1 MKN = {CONFIG.MKN_TO_USDT} USDT"
     balance_text += f"\n📤 Мин. вывод: {CONFIG.MIN_WITHDRAW} USDT"
     
     await update.message.reply_text(
@@ -807,7 +809,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
                 await update.message.reply_text(f"💰 *Счет на {amount} USDT*\n\nНажми «Оплатить» → оплати → «Проверить оплату»", reply_markup=keyboard, parse_mode="Markdown")
             else:
-                await update.message.reply_text("❌ Ошибка создания счета. Проверь API ключ CryptoBot.")
+                await update.message.reply_text("❌ Ошибка создания счета. Проверь настройки CryptoBot (нужно активировать API ключ и пополнить баланс TON)")
         except:
             await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
