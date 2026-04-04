@@ -8,11 +8,11 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ============================================================================
-# КОНФИГУРАЦИЯ (токены прямо здесь)
+# КОНФИГУРАЦИЯ
 # ============================================================================
 
 @dataclass
@@ -20,12 +20,18 @@ class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
     CRYPTOPAY_API_KEY: str = "556863:AAPMuBD5NBKWHSfsntXlARm1hZ52BCbQXMF"
     ADMIN_ID: int = 8780917575
-    MINI_APP_URL: str = "https://your-domain.com"
+    BOT_USERNAME: str = "CryptoKan_bot"
     
     WITHDRAW_FEE: int = 5
     REFERRAL_PERCENT: int = 5
-    REFERRAL_BONUS: float = 0.5
-    LOTTERY_COST: float = 1.0
+    REGISTRATION_BONUS: float = 100
+    REFERRAL_BONUS: float = 50
+    LOTTERY_COST: float = 100
+    
+    MKN_TO_USDT: float = 0.001  # 1 MKN = 0.001 USDT
+    MIN_MKN_SWAP: float = 500   # Минимум 500 MKN для обмена
+    MIN_WITHDRAW: float = 1.1   # Минимум 1.1 USDT для вывода
+    
     LOTTERY_MULTIPLIERS: Dict[int, int] = None
     RATES: Dict[str, float] = None
     
@@ -37,52 +43,14 @@ class Config:
 
 
 CONFIG = Config()
-CURRENCIES = ["USDT", "TON", "BTC", "ETH", "SOL"]
-
-# ============================================================================
-# ОБНОВЛЕНИЕ КУРСОВ
-# ============================================================================
-
-def fetch_binance_price(symbol: str) -> Optional[float]:
-    try:
-        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-        with urllib.request.urlopen(url, timeout=5) as response:
-            data = json.loads(response.read().decode())
-            return float(data["price"])
-    except Exception as e:
-        print(f"Ошибка получения {symbol}: {e}")
-        return None
-
-def update_rates():
-    try:
-        btc_price = fetch_binance_price("BTCUSDT")
-        if btc_price:
-            CONFIG.RATES["BTC"] = btc_price
-        
-        eth_price = fetch_binance_price("ETHUSDT")
-        if eth_price:
-            CONFIG.RATES["ETH"] = eth_price
-        
-        sol_price = fetch_binance_price("SOLUSDT")
-        if sol_price:
-            CONFIG.RATES["SOL"] = sol_price
-        
-        ton_price = fetch_binance_price("TONUSDT")
-        if ton_price:
-            CONFIG.RATES["TON"] = ton_price
-        
-        print(f"🔄 Курсы обновлены: BTC={CONFIG.RATES['BTC']:.0f}, ETH={CONFIG.RATES['ETH']:.0f}, SOL={CONFIG.RATES['SOL']:.2f}, TON={CONFIG.RATES['TON']:.2f}")
-    except Exception as e:
-        print(f"❌ Ошибка обновления курсов: {e}")
-    
-    threading.Timer(300, update_rates).start()
+CURRENCIES = ["USDT", "TON", "BTC", "ETH", "SOL", "MKN"]
 
 # ============================================================================
 # БАЗА ДАННЫХ
 # ============================================================================
 
 class Database:
-    def __init__(self, db_path: str = "crypto_wallet.db"):
+    def __init__(self, db_path: str = "CryptoKan.db"):
         self.db_path = db_path
         self._init_db()
     
@@ -96,12 +64,12 @@ class Database:
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
-                last_name TEXT,
                 balance_usdt REAL DEFAULT 0,
                 balance_ton REAL DEFAULT 0,
                 balance_btc REAL DEFAULT 0,
                 balance_eth REAL DEFAULT 0,
                 balance_sol REAL DEFAULT 0,
+                balance_mkn REAL DEFAULT 0,
                 referrer_id INTEGER,
                 total_deposited REAL DEFAULT 0,
                 total_withdrawn REAL DEFAULT 0,
@@ -137,6 +105,16 @@ class Database:
                 currency TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
+            c.execute('''CREATE TABLE IF NOT EXISTS withdraw_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                amount REAL,
+                address TEXT,
+                fee REAL,
+                currency TEXT DEFAULT 'USDT',
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )''')
             conn.commit()
     
     def get_user(self, user_id: int) -> Optional[Dict]:
@@ -150,12 +128,13 @@ class Database:
         return None
     
     def create_user(self, user_id: int, username: str = None, first_name: str = None,
-                    last_name: str = None, referrer_id: int = None) -> bool:
+                    referrer_id: int = None) -> bool:
         with self._get_connection() as conn:
             c = conn.cursor()
             try:
-                c.execute('''INSERT INTO users (user_id, username, first_name, last_name, referrer_id)
-                             VALUES (?, ?, ?, ?, ?)''', (user_id, username, first_name, last_name, referrer_id))
+                c.execute('''INSERT INTO users (user_id, username, first_name, referrer_id, balance_mkn)
+                             VALUES (?, ?, ?, ?, ?)''', 
+                          (user_id, username, first_name, referrer_id, CONFIG.REGISTRATION_BONUS))
                 conn.commit()
                 return True
             except sqlite3.IntegrityError:
@@ -245,6 +224,91 @@ class Database:
             c = conn.cursor()
             c.execute("DELETE FROM pending_invoices WHERE invoice_id = ?", (invoice_id,))
             conn.commit()
+    
+    def add_withdraw_request(self, user_id: int, amount: float, address: str, fee: float, currency: str = "USDT") -> int:
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute('''INSERT INTO withdraw_requests (user_id, amount, address, fee, currency)
+                         VALUES (?, ?, ?, ?, ?)''', (user_id, amount, address, fee, currency))
+            conn.commit()
+            return c.lastrowid
+    
+    def get_pending_withdraws(self) -> List[Dict]:
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT * FROM withdraw_requests WHERE status = 'pending' ORDER BY created_at ASC")
+            rows = c.fetchall()
+            columns = [d[0] for d in c.description]
+            return [dict(zip(columns, row)) for row in rows]
+    
+    def approve_withdraw(self, request_id: int):
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE withdraw_requests SET status = 'approved' WHERE id = ?", (request_id,))
+            conn.commit()
+    
+    def get_all_users(self) -> List[Dict]:
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT user_id, username, balance_usdt, balance_mkn, created_at FROM users ORDER BY created_at DESC")
+            rows = c.fetchall()
+            columns = ['user_id', 'username', 'balance_usdt', 'balance_mkn', 'created_at']
+            return [dict(zip(columns, row)) for row in rows]
+    
+    def get_stats(self) -> Dict:
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*) FROM users")
+            users = c.fetchone()[0]
+            c.execute("SELECT SUM(total_deposited) FROM users")
+            deposits = c.fetchone()[0] or 0
+            c.execute("SELECT SUM(total_withdrawn) FROM users")
+            withdraws = c.fetchone()[0] or 0
+            c.execute("SELECT SUM(balance_mkn) FROM users")
+            mkn_supply = c.fetchone()[0] or 0
+            return {"users": users, "deposits": deposits, "withdraws": withdraws, "mkn_supply": mkn_supply}
+    
+    def admin_add_balance(self, user_id: int, currency: str, amount: float):
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            col = f"balance_{currency.lower()}"
+            c.execute(f"UPDATE users SET {col} = {col} + ? WHERE user_id = ?", (amount, user_id))
+            conn.commit()
+            self.add_transaction(user_id, "admin_add", currency, amount, "completed", details="Пополнение от администратора")
+
+
+# ============================================================================
+# ОБНОВЛЕНИЕ КУРСОВ
+# ============================================================================
+
+def fetch_binance_price(symbol: str) -> Optional[float]:
+    try:
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        with urllib.request.urlopen(url, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            return float(data["price"])
+    except Exception as e:
+        print(f"Ошибка получения {symbol}: {e}")
+        return None
+
+def update_rates():
+    try:
+        btc_price = fetch_binance_price("BTCUSDT")
+        if btc_price:
+            CONFIG.RATES["BTC"] = btc_price
+        eth_price = fetch_binance_price("ETHUSDT")
+        if eth_price:
+            CONFIG.RATES["ETH"] = eth_price
+        sol_price = fetch_binance_price("SOLUSDT")
+        if sol_price:
+            CONFIG.RATES["SOL"] = sol_price
+        ton_price = fetch_binance_price("TONUSDT")
+        if ton_price:
+            CONFIG.RATES["TON"] = ton_price
+        print(f"🔄 CryptoKan | Курсы обновлены")
+    except Exception as e:
+        print(f"❌ CryptoKan | Ошибка обновления курсов: {e}")
+    threading.Timer(300, update_rates).start()
 
 
 # ============================================================================
@@ -258,7 +322,7 @@ def create_invoice(amount: float, user_id: int, currency: str = "USDT") -> Tuple
         data = {
             "asset": currency,
             "amount": str(amount),
-            "description": f"Deposit for user {user_id}",
+            "description": f"CryptoKan Deposit | User {user_id}",
             "payload": str(user_id)
         }
         req = urllib.request.Request(
@@ -295,14 +359,26 @@ db = Database()
 awaiting_state = {}
 
 main_keyboard = InlineKeyboardMarkup([
-    [InlineKeyboardButton("🏦 Мой кошелек", callback_data="wallet")],
+    [InlineKeyboardButton("🏦 Кошелек", callback_data="wallet")],
     [InlineKeyboardButton("💱 Обменник", callback_data="exchange")],
     [InlineKeyboardButton("🎲 Лотерея", callback_data="lottery")],
     [InlineKeyboardButton("👥 Рефералы", callback_data="referral")],
-    [InlineKeyboardButton("📜 История", callback_data="history")]
+    [InlineKeyboardButton("📜 История", callback_data="history")],
+    [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")]
 ])
 
 back_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="menu")]])
+
+admin_keyboard = InlineKeyboardMarkup([
+    [InlineKeyboardButton("📊 Статистика", callback_data="admin_stats")],
+    [InlineKeyboardButton("👥 Все пользователи", callback_data="admin_users")],
+    [InlineKeyboardButton("💸 Заявки на вывод", callback_data="admin_withdraws")],
+    [InlineKeyboardButton("➕ Пополнить пользователя", callback_data="admin_add_balance")],
+    [InlineKeyboardButton("🔙 Главное меню", callback_data="menu")]
+])
+
+def is_admin(user_id: int) -> bool:
+    return user_id == CONFIG.ADMIN_ID
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -321,55 +397,256 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user = db.get_user(user_id)
     if not user:
-        db.create_user(user_id, username, first_name, None, referrer_id)
+        db.create_user(user_id, username, first_name, referrer_id)
         if referrer_id:
-            db.update_balance(referrer_id, "USDT", CONFIG.REFERRAL_BONUS, "add")
-            db.add_transaction(referrer_id, "referral_bonus", "USDT", CONFIG.REFERRAL_BONUS, "completed", details=f"За регистрацию {username}")
+            db.update_balance(referrer_id, "MKN", CONFIG.REFERRAL_BONUS, "add")
+            db.add_transaction(referrer_id, "referral_bonus", "MKN", CONFIG.REFERRAL_BONUS, "completed", details=f"За регистрацию {username}")
             db.add_referral_earning(referrer_id, user_id, 0, CONFIG.REFERRAL_BONUS)
+            try:
+                await context.bot.send_message(referrer_id, f"🎉 *Новый реферал!*\n@{username} зарегистрировался!\n💰 Ты получил {CONFIG.REFERRAL_BONUS} MKN", parse_mode="Markdown")
+            except:
+                pass
     
     balances = db.get_all_balances(user_id)
-    balance_text = "🏦 *Твои балансы:*\n\n" + "\n".join([f"💰 {c}: `{balances[c]:.4f}`" for c in CURRENCIES])
-    balance_text += f"\n\n👥 Рефералов: {db.get_referral_count(user_id)}"
-    balance_text += f"\n💸 Комиссия на вывод: {CONFIG.WITHDRAW_FEE}%"
+    balance_text = "🏦 *CryptoKan*\n\n"
+    for c in CURRENCIES:
+        if c == "MKN":
+            balance_text += f"💎 {c}: `{balances[c]:.2f}`\n"
+        else:
+            balance_text += f"💰 {c}: `{balances[c]:.4f}`\n"
+    balance_text += f"\n👥 Рефералов: {db.get_referral_count(user_id)}"
+    balance_text += f"\n💎 1 MKN = {CONFIG.MKN_TO_USDT} USDT (мин. обмен 500 MKN)"
+    balance_text += f"\n📤 Мин. вывод: {CONFIG.MIN_WITHDRAW} USDT"
     
-    await update.message.reply_text(f"✨ *Криптокошелек* ✨\n\n{balance_text}", reply_markup=main_keyboard, parse_mode="Markdown")
+    await update.message.reply_text(
+        f"✨ *Добро пожаловать в CryptoKan* ✨\n\n{balance_text}",
+        reply_markup=main_keyboard,
+        parse_mode="Markdown"
+    )
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     balances = db.get_all_balances(user_id)
-    balance_text = "🏦 *Твои балансы:*\n\n" + "\n".join([f"💰 {c}: `{balances[c]:.4f}`" for c in CURRENCIES])
-    balance_text += f"\n\n👥 Рефералов: {db.get_referral_count(user_id)}"
-    await query.edit_message_text(f"✨ *Криптокошелек* ✨\n\n{balance_text}", reply_markup=main_keyboard, parse_mode="Markdown")
+    balance_text = "🏦 *CryptoKan*\n\n"
+    for c in CURRENCIES:
+        if c == "MKN":
+            balance_text += f"💎 {c}: `{balances[c]:.2f}`\n"
+        else:
+            balance_text += f"💰 {c}: `{balances[c]:.4f}`\n"
+    balance_text += f"\n👥 Рефералов: {db.get_referral_count(user_id)}"
+    await query.edit_message_text(
+        f"✨ *CryptoKan* ✨\n\n{balance_text}",
+        reply_markup=main_keyboard,
+        parse_mode="Markdown"
+    )
 
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    
+    if is_admin(user_id):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏦 Кошелек", callback_data="wallet_user")],
+            [InlineKeyboardButton("👑 Админ-панель", callback_data="admin_panel")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="menu")]
+        ])
+        await query.edit_message_text(
+            "👑 *Добро пожаловать, Администратор!*\n\nВыберите режим:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+    else:
+        await show_user_wallet(update, context)
+
+async def show_user_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
     balances = db.get_all_balances(user_id)
-    text = "🏦 *Твой кошелек*\n\n"
+    text = "🏦 *Твой кошелек CryptoKan*\n\n"
     for c in CURRENCIES:
-        text += f"💰 {c}: `{balances[c]:.6f}`\n"
+        if c == "MKN":
+            text += f"💎 {c}: `{balances[c]:.2f}`\n"
+        else:
+            text += f"💰 {c}: `{balances[c]:.6f}`\n"
+    text += f"\n💸 Комиссия на вывод: {CONFIG.WITHDRAW_FEE}%"
+    text += f"\n💎 1 MKN = {CONFIG.MKN_TO_USDT} USDT"
+    text += f"\n📤 Мин. вывод: {CONFIG.MIN_WITHDRAW} USDT"
+    text += f"\n🔄 Мин. обмен MKN: {CONFIG.MIN_MKN_SWAP} MKN"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📥 Пополнить", callback_data="deposit"), InlineKeyboardButton("📤 Вывести", callback_data="withdraw")],
         [InlineKeyboardButton("🔄 Перевести", callback_data="transfer")],
+        [InlineKeyboardButton("💎 Купить MKN", callback_data="buy_mkn"), InlineKeyboardButton("💎 Продать MKN", callback_data="sell_mkn")],
         [InlineKeyboardButton("🔙 Назад", callback_data="menu")]
     ])
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id):
+        await query.edit_message_text("❌ У вас нет доступа к админ-панели!", reply_markup=back_keyboard)
+        return
+    
+    stats = db.get_stats()
+    text = "👑 *Админ-панель CryptoKan*\n\n"
+    text += f"📊 Пользователей: {stats['users']}\n"
+    text += f"💰 Всего депозитов: {stats['deposits']:.2f} USDT\n"
+    text += f"📤 Всего выводов: {stats['withdraws']:.2f} USDT\n"
+    text += f"💎 MKN в обращении: {stats['mkn_supply']:.2f}"
+    
+    await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    stats = db.get_stats()
+    text = "📊 *Статистика*\n\n"
+    text += f"👥 Пользователей: {stats['users']}\n"
+    text += f"💰 Депозитов: {stats['deposits']:.2f} USDT\n"
+    text += f"📤 Выводов: {stats['withdraws']:.2f} USDT\n"
+    text += f"💎 MKN в обращении: {stats['mkn_supply']:.2f}"
+    
+    await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
+
+async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    users = db.get_all_users()
+    if not users:
+        await query.edit_message_text("Нет пользователей", reply_markup=admin_keyboard)
+        return
+    
+    text = "👥 *Пользователи CryptoKan*\n\n"
+    for u in users[:20]:
+        text += f"🆔 {u['user_id']} | @{u['username'] or 'no_username'}\n"
+        text += f"   💰 USDT: {u['balance_usdt']:.2f} | 💎 MKN: {u['balance_mkn']:.0f}\n"
+        text += f"   📅 {u['created_at'][:10]}\n\n"
+    
+    if len(users) > 20:
+        text += f"... и еще {len(users) - 20} пользователей"
+    
+    await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
+
+async def admin_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    withdraws = db.get_pending_withdraws()
+    if not withdraws:
+        await query.edit_message_text("Нет активных заявок на вывод", reply_markup=admin_keyboard)
+        return
+    
+    text = "💸 *Заявки на вывод*\n\n"
+    for w in withdraws:
+        text += f"🆔 #{w['id']} | Пользователь: {w['user_id']}\n"
+        text += f"💰 Сумма: {w['amount']} {w['currency']}\n"
+        text += f"📤 Адрес: {w['address'][:20]}...\n"
+        text += f"⚡️ Комиссия: {w['fee']}%\n"
+        text += f"📅 {w['created_at'][:10]}\n"
+        text += f"✅ /approve_{w['id']} - подтвердить\n\n"
+    
+    await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
+
+async def admin_add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id):
+        return
+    
+    awaiting_state[user_id] = "admin_add"
+    await query.edit_message_text(
+        "➕ *Пополнение пользователя*\n\nВведи ID пользователя, валюту и сумму через пробел:\nПример: `123456789 USDT 100`\nПример: `987654321 MKN 500`",
+        reply_markup=admin_keyboard,
+        parse_mode="Markdown"
+    )
+
+async def deposit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    awaiting_state[query.from_user.id] = "deposit"
+    await query.edit_message_text(
+        "💰 *Пополнение CryptoKan*\n\nВведи сумму в USDT (мин 1):\nПример: `10`",
+        reply_markup=back_keyboard,
+        parse_mode="Markdown"
+    )
+
+async def withdraw_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    awaiting_state[query.from_user.id] = "withdraw"
+    await query.edit_message_text(
+        f"📤 *Вывод из CryptoKan*\n\nВведи адрес кошелька USDT (TRC20) и сумму через пробел\nМин. сумма: {CONFIG.MIN_WITHDRAW} USDT\nКомиссия: {CONFIG.WITHDRAW_FEE}%\nПример: `TVqP8Ur8f1DUUM3k4QxVxz1Qn1Gddq4VFT 10`",
+        reply_markup=back_keyboard,
+        parse_mode="Markdown"
+    )
+
+async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    awaiting_state[query.from_user.id] = "transfer"
+    await query.edit_message_text(
+        "🔄 *Перевод в CryptoKan*\n\nФормат: `@username 10 USDT`\nПример: `@ivan 5 USDT`\n\nДоступные валюты: USDT, TON, BTC, ETH, SOL, MKN",
+        reply_markup=back_keyboard,
+        parse_mode="Markdown"
+    )
+
+async def buy_mkn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    awaiting_state[query.from_user.id] = "buy_mkn"
+    await query.edit_message_text(
+        f"💎 *Покупка MKN*\n\nКурс: 1 MKN = {CONFIG.MKN_TO_USDT} USDT\nМинимум: {CONFIG.MIN_MKN_SWAP} MKN ({CONFIG.MIN_MKN_SWAP * CONFIG.MKN_TO_USDT} USDT)\n\nВведи сумму MKN, которую хочешь купить:\nПример: `500`",
+        reply_markup=back_keyboard,
+        parse_mode="Markdown"
+    )
+
+async def sell_mkn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    awaiting_state[query.from_user.id] = "sell_mkn"
+    await query.edit_message_text(
+        f"💎 *Продажа MKN*\n\nКурс: 1 MKN = {CONFIG.MKN_TO_USDT} USDT\nМинимум: {CONFIG.MIN_MKN_SWAP} MKN\n\nВведи сумму MKN, которую хочешь продать:\nПример: `500`",
+        reply_markup=back_keyboard,
+        parse_mode="Markdown"
+    )
+
 async def exchange(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = "💱 *Обменник*\n\nДоступные валюты:\n" + "\n".join([f"💰 1 {c} = {CONFIG.RATES[c]:.2f} USDT" for c in CURRENCIES])
-    text += "\n\nИспользуй команду:\n/swap USDT TON 10"
+    text = "💱 *Обменник CryptoKan*\n\n*Текущие курсы (USDT):*\n"
+    for c in ["USDT", "TON", "BTC", "ETH", "SOL"]:
+        text += f"💰 1 {c} = {CONFIG.RATES[c]:.2f} USDT\n"
+    text += f"💎 1 MKN = {CONFIG.MKN_TO_USDT} USDT (мин. {CONFIG.MIN_MKN_SWAP} MKN)\n"
+    text += "\n*Команды:*\n`/swap USDT TON 10` - обмен валют\n`/swap USDT MKN 500` - покупка MKN\n`/swap MKN USDT 500` - продажа MKN"
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
 async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
     if len(args) != 3:
-        await update.message.reply_text("❌ Используй: /swap FROM TO AMOUNT\nПример: /swap USDT TON 10")
+        await update.message.reply_text("❌ Используй: /swap FROM TO AMOUNT\nПример: /swap USDT MKN 500")
         return
     from_cur = args[0].upper()
     to_cur = args[1].upper()
@@ -379,29 +656,57 @@ async def swap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Неверная сумма")
         return
     if from_cur not in CURRENCIES or to_cur not in CURRENCIES:
-        await update.message.reply_text("❌ Неподдерживаемая валюта")
+        await update.message.reply_text(f"❌ Неподдерживаемая валюта. Доступны: {', '.join(CURRENCIES)}")
         return
-    balance = db.get_balance(user_id, from_cur)
-    if balance < amount:
-        await update.message.reply_text(f"❌ Недостаточно {from_cur}. Баланс: {balance:.4f}")
-        return
-    usd_value = amount * CONFIG.RATES[from_cur]
-    to_amount = usd_value / CONFIG.RATES[to_cur]
-    db.update_balance(user_id, from_cur, amount, "subtract")
-    db.update_balance(user_id, to_cur, to_amount, "add")
-    db.add_transaction(user_id, "swap", f"{from_cur}->{to_cur}", amount, "completed", details=f"Получено: {to_amount:.4f} {to_cur}")
-    await update.message.reply_text(f"✅ *Обмен выполнен!*\n\nОтдано: {amount} {from_cur}\nПолучено: {to_amount:.4f} {to_cur}", parse_mode="Markdown")
+    
+    if from_cur == "MKN" and to_cur == "USDT":
+        if amount < CONFIG.MIN_MKN_SWAP:
+            await update.message.reply_text(f"❌ Минимальная продажа MKN: {CONFIG.MIN_MKN_SWAP} MKN")
+            return
+        balance = db.get_balance(user_id, "MKN")
+        if balance < amount:
+            await update.message.reply_text(f"❌ Недостаточно MKN. Баланс: {balance:.2f}")
+            return
+        usd_amount = amount * CONFIG.MKN_TO_USDT
+        db.update_balance(user_id, "MKN", amount, "subtract")
+        db.update_balance(user_id, "USDT", usd_amount, "add")
+        db.add_transaction(user_id, "swap", f"MKN->USDT", amount, "completed", details=f"Получено: {usd_amount:.4f} USDT")
+        await update.message.reply_text(f"✅ *Продажа MKN!*\n\nОтдано: {amount} MKN\nПолучено: {usd_amount:.4f} USDT", parse_mode="Markdown")
+    elif from_cur == "USDT" and to_cur == "MKN":
+        mkn_amount = amount / CONFIG.MKN_TO_USDT
+        if mkn_amount < CONFIG.MIN_MKN_SWAP:
+            await update.message.reply_text(f"❌ Минимальная покупка MKN: {CONFIG.MIN_MKN_SWAP} MKN (нужно {CONFIG.MIN_MKN_SWAP * CONFIG.MKN_TO_USDT} USDT)")
+            return
+        balance = db.get_balance(user_id, "USDT")
+        if balance < amount:
+            await update.message.reply_text(f"❌ Недостаточно USDT. Баланс: {balance:.4f}")
+            return
+        db.update_balance(user_id, "USDT", amount, "subtract")
+        db.update_balance(user_id, "MKN", mkn_amount, "add")
+        db.add_transaction(user_id, "swap", f"USDT->MKN", amount, "completed", details=f"Получено: {mkn_amount:.2f} MKN")
+        await update.message.reply_text(f"✅ *Покупка MKN!*\n\nОтдано: {amount} USDT\nПолучено: {mkn_amount:.2f} MKN", parse_mode="Markdown")
+    else:
+        balance = db.get_balance(user_id, from_cur)
+        if balance < amount:
+            await update.message.reply_text(f"❌ Недостаточно {from_cur}. Баланс: {balance:.4f}")
+            return
+        usd_value = amount * CONFIG.RATES[from_cur]
+        to_amount = usd_value / CONFIG.RATES[to_cur]
+        db.update_balance(user_id, from_cur, amount, "subtract")
+        db.update_balance(user_id, to_cur, to_amount, "add")
+        db.add_transaction(user_id, "swap", f"{from_cur}->{to_cur}", amount, "completed", details=f"Получено: {to_amount:.4f} {to_cur}")
+        await update.message.reply_text(f"✅ *Обмен выполнен!*\n\nОтдано: {amount} {from_cur}\nПолучено: {to_amount:.4f} {to_cur}", parse_mode="Markdown")
 
 async def lottery(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    balance = db.get_balance(user_id, "USDT")
+    balance = db.get_balance(user_id, "MKN")
     if balance < CONFIG.LOTTERY_COST:
-        await query.edit_message_text(f"❌ Недостаточно! Нужно: {CONFIG.LOTTERY_COST} USDT", reply_markup=back_keyboard)
+        await query.edit_message_text(f"❌ Недостаточно MKN! Нужно: {CONFIG.LOTTERY_COST} MKN\n💎 Купить MKN можно в кошельке", reply_markup=back_keyboard)
         return
-    db.update_balance(user_id, "USDT", CONFIG.LOTTERY_COST, "subtract")
-    db.add_transaction(user_id, "lottery_ticket", "USDT", CONFIG.LOTTERY_COST, "completed")
+    db.update_balance(user_id, "MKN", CONFIG.LOTTERY_COST, "subtract")
+    db.add_transaction(user_id, "lottery_ticket", "MKN", CONFIG.LOTTERY_COST, "completed")
     rand = random.randint(1, 100)
     multiplier = 1
     win = False
@@ -412,11 +717,11 @@ async def lottery(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
     if win:
         prize = CONFIG.LOTTERY_COST * multiplier
-        db.update_balance(user_id, "USDT", prize, "add")
-        db.add_transaction(user_id, "lottery_win", "USDT", prize, "completed")
-        text = f"🎉 *ВЫИГРЫШ x{multiplier}!* +{prize} USDT\n💰 Баланс: {db.get_balance(user_id, 'USDT'):.4f} USDT"
+        db.update_balance(user_id, "MKN", prize, "add")
+        db.add_transaction(user_id, "lottery_win", "MKN", prize, "completed")
+        text = f"🎉 *ВЫИГРЫШ x{multiplier}!* +{prize} MKN\n💎 Баланс MKN: {db.get_balance(user_id, 'MKN'):.2f}"
     else:
-        text = f"😢 *Проигрыш* -{CONFIG.LOTTERY_COST} USDT\n💰 Баланс: {db.get_balance(user_id, 'USDT'):.4f} USDT"
+        text = f"😢 *Проигрыш* -{CONFIG.LOTTERY_COST} MKN\n💎 Баланс MKN: {db.get_balance(user_id, 'MKN'):.2f}"
     lottery_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🎲 Еще раз", callback_data="lottery")], [InlineKeyboardButton("🔙 Назад", callback_data="menu")]])
     await query.edit_message_text(text, reply_markup=lottery_keyboard, parse_mode="Markdown")
 
@@ -424,10 +729,10 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    ref_link = f"https://t.me/{context.bot.username}?start=ref_{user_id}"
+    ref_link = f"https://t.me/{CONFIG.BOT_USERNAME}?start=ref_{user_id}"
     count = db.get_referral_count(user_id)
     earnings = db.get_referral_earnings(user_id)
-    text = f"👥 *Реферальная программа*\n\nСсылка:\n`{ref_link}`\n\n📊 Приглашено: {count}\n💰 Заработано: {earnings:.4f} USDT\n🎁 Бонус: {CONFIG.REFERRAL_BONUS} USDT за друга\n💸 {CONFIG.REFERRAL_PERCENT}% от пополнений"
+    text = f"👥 *Реферальная программа CryptoKan*\n\nТвоя ссылка:\n`{ref_link}`\n\n📊 Приглашено: {count}\n💰 Заработано: {earnings:.2f} MKN\n🎁 Бонус: {CONFIG.REFERRAL_BONUS} MKN за друга\n💸 {CONFIG.REFERRAL_PERCENT}% от пополнений рефералов"
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -436,40 +741,57 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     transactions = db.get_user_transactions(user_id, 15)
     if not transactions:
-        await query.edit_message_text("📜 *История пуста*", reply_markup=back_keyboard, parse_mode="Markdown")
+        await query.edit_message_text("📜 *История транзакций пуста*", reply_markup=back_keyboard, parse_mode="Markdown")
         return
-    text = "📜 *Последние транзакции:*\n\n"
-    emoji_map = {"deposit": "📥", "withdraw": "📤", "swap": "🔄", "lottery_ticket": "🎲", "lottery_win": "🎉", "referral_bonus": "👥"}
+    text = "📜 *Последние транзакции CryptoKan:*\n\n"
+    emoji_map = {"deposit": "📥", "withdraw": "📤", "swap": "🔄", "lottery_ticket": "🎲", "lottery_win": "🎉", "referral_bonus": "👥", "transfer_send": "📤", "transfer_receive": "📥", "admin_add": "👑"}
     for tx in transactions:
         emoji = emoji_map.get(tx['type'], "📝")
-        sign = "+" if tx['type'] in ['deposit', 'lottery_win', 'referral_bonus'] else "-"
+        sign = "+" if tx['type'] in ['deposit', 'lottery_win', 'referral_bonus', 'transfer_receive', 'admin_add'] else "-"
         text += f"{emoji} {tx['type']}: {sign}{tx['amount']:.4f} {tx['currency']}\n"
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
-async def deposit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    awaiting_state[query.from_user.id] = "deposit"
-    await query.edit_message_text("💰 *Пополнение*\n\nВведи сумму в USDT (мин 1):\nПример: `10`", reply_markup=back_keyboard, parse_mode="Markdown")
-
-async def withdraw_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    awaiting_state[query.from_user.id] = "withdraw"
-    await query.edit_message_text("📤 *Вывод USDT*\n\nВведи адрес кошелька и сумму через пробел:\nПример: `TVqP8Ur8f1DUUM3k4QxVxz1Qn1Gddq4VFT 10`", reply_markup=back_keyboard, parse_mode="Markdown")
-
-async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    awaiting_state[query.from_user.id] = "transfer"
-    await query.edit_message_text("🔄 *Перевод*\n\nФормат: `@username 10 USDT`\nПример: `@ivan 5 USDT`", reply_markup=back_keyboard, parse_mode="Markdown")
+    text = "ℹ️ *CryptoKan - Помощь*\n\n"
+    text += "📥 *Пополнение:* Кошелек → Пополнить → введи сумму → оплати через CryptoBot\n"
+    text += f"📤 *Вывод:* Кошелек → Вывести → адрес и сумма (мин {CONFIG.MIN_WITHDRAW} USDT, комиссия {CONFIG.WITHDRAW_FEE}%)\n"
+    text += "🔄 *Перевод:* Кошелек → Перевести → @username сумма USDT\n"
+    text += f"💎 *MKN:* 1 MKN = {CONFIG.MKN_TO_USDT} USDT, мин. обмен {CONFIG.MIN_MKN_SWAP} MKN\n"
+    text += "💱 *Обмен:* /swap FROM TO AMOUNT\n"
+    text += "🎲 *Лотерея:* Билет 100 MKN, шанс выигрыша 21%\n"
+    text += "👥 *Рефералы:* Приглашай друзей и получай 50 MKN за каждого!"
+    await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
     state = awaiting_state.get(user_id)
     
-    if state == "deposit":
+    if state == "admin_add" and is_admin(user_id):
+        parts = text.split()
+        if len(parts) != 3:
+            await update.message.reply_text("❌ Формат: ID ВАЛЮТА СУММА\nПример: `123456789 USDT 100`")
+            return
+        try:
+            target_id = int(parts[0])
+            currency = parts[1].upper()
+            amount = float(parts[2])
+            if currency not in CURRENCIES:
+                await update.message.reply_text(f"❌ Доступны: {', '.join(CURRENCIES)}")
+                return
+            db.admin_add_balance(target_id, currency, amount)
+            await update.message.reply_text(f"✅ Пользователю {target_id} начислено {amount} {currency}")
+            try:
+                await context.bot.send_message(target_id, f"👑 *Администратор начислил вам {amount} {currency}*", parse_mode="Markdown")
+            except:
+                pass
+        except:
+            await update.message.reply_text("❌ Неверный формат")
+        awaiting_state.pop(user_id, None)
+    
+    elif state == "deposit":
         try:
             amount = float(text)
             if amount < 1:
@@ -485,7 +807,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
                 await update.message.reply_text(f"💰 *Счет на {amount} USDT*\n\nНажми «Оплатить» → оплати → «Проверить оплату»", reply_markup=keyboard, parse_mode="Markdown")
             else:
-                await update.message.reply_text("❌ Ошибка создания счета")
+                await update.message.reply_text("❌ Ошибка создания счета. Проверь API ключ CryptoBot.")
         except:
             await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
@@ -537,6 +859,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("❌ Неверная сумма")
             return
+        if amount < CONFIG.MIN_WITHDRAW:
+            await update.message.reply_text(f"❌ Минимальная сумма вывода: {CONFIG.MIN_WITHDRAW} USDT")
+            return
         balance = db.get_balance(user_id, "USDT")
         fee = amount * CONFIG.WITHDRAW_FEE / 100
         total = amount + fee
@@ -544,9 +869,48 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Недостаточно. Нужно: {total:.4f} USDT (включая комиссию {CONFIG.WITHDRAW_FEE}%)")
             return
         db.update_balance(user_id, "USDT", total, "subtract")
+        db.add_withdraw_request(user_id, amount, address, fee)
         db.add_transaction(user_id, "withdraw", "USDT", amount, "pending", fee=fee, details=f"Адрес: {address}")
         await update.message.reply_text(f"✅ Заявка на вывод {amount} USDT создана!\n💰 Комиссия: {fee:.4f} USDT\n⏳ Ожидайте обработки.")
-        await context.bot.send_message(CONFIG.ADMIN_ID, f"🔔 Заявка на вывод\nПользователь: {user_id}\nСумма: {amount} USDT\nАдрес: {address}")
+        await context.bot.send_message(CONFIG.ADMIN_ID, f"🔔 *Новая заявка на вывод*\n👤 Пользователь: {user_id}\n💰 Сумма: {amount} USDT\n📤 Адрес: {address}\n⚡️ Комиссия: {fee:.4f} USDT", parse_mode="Markdown")
+        awaiting_state.pop(user_id, None)
+    
+    elif state == "buy_mkn":
+        try:
+            mkn_amount = float(text)
+            if mkn_amount < CONFIG.MIN_MKN_SWAP:
+                await update.message.reply_text(f"❌ Минимальная покупка: {CONFIG.MIN_MKN_SWAP} MKN")
+                return
+            usd_needed = mkn_amount * CONFIG.MKN_TO_USDT
+            balance = db.get_balance(user_id, "USDT")
+            if balance < usd_needed:
+                await update.message.reply_text(f"❌ Недостаточно USDT. Нужно: {usd_needed:.4f} USDT")
+                return
+            db.update_balance(user_id, "USDT", usd_needed, "subtract")
+            db.update_balance(user_id, "MKN", mkn_amount, "add")
+            db.add_transaction(user_id, "swap", "USDT->MKN", usd_needed, "completed", details=f"Получено: {mkn_amount:.2f} MKN")
+            await update.message.reply_text(f"✅ *Покупка MKN!*\n\nОтдано: {usd_needed:.4f} USDT\nПолучено: {mkn_amount:.2f} MKN", parse_mode="Markdown")
+        except:
+            await update.message.reply_text("❌ Введи число")
+        awaiting_state.pop(user_id, None)
+    
+    elif state == "sell_mkn":
+        try:
+            mkn_amount = float(text)
+            if mkn_amount < CONFIG.MIN_MKN_SWAP:
+                await update.message.reply_text(f"❌ Минимальная продажа: {CONFIG.MIN_MKN_SWAP} MKN")
+                return
+            usd_received = mkn_amount * CONFIG.MKN_TO_USDT
+            balance = db.get_balance(user_id, "MKN")
+            if balance < mkn_amount:
+                await update.message.reply_text(f"❌ Недостаточно MKN. Баланс: {balance:.2f}")
+                return
+            db.update_balance(user_id, "MKN", mkn_amount, "subtract")
+            db.update_balance(user_id, "USDT", usd_received, "add")
+            db.add_transaction(user_id, "swap", "MKN->USDT", mkn_amount, "completed", details=f"Получено: {usd_received:.4f} USDT")
+            await update.message.reply_text(f"✅ *Продажа MKN!*\n\nОтдано: {mkn_amount} MKN\nПолучено: {usd_received:.4f} USDT", parse_mode="Markdown")
+        except:
+            await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
 
 async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -566,26 +930,50 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.edit_message_text(f"⏳ Не оплачено. Статус: {status}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Проверить снова", callback_data=f"check_{inv_id}")]]))
 
-def main():
-    threading.Thread(target=update_rates, daemon=True).start()
+async def handle_approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ Нет доступа")
+        return
     
+    text = update.message.text.strip()
+    if text.startswith("/approve_"):
+        try:
+            request_id = int(text.replace("/approve_", ""))
+            db.approve_withdraw(request_id)
+            await update.message.reply_text(f"✅ Заявка #{request_id} подтверждена!")
+        except:
+            await update.message.reply_text("❌ Ошибка")
+
+def main():
+    update_rates()
     app = Application.builder().token(CONFIG.BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("swap", swap_command))
+    app.add_handler(CommandHandler("approve_", handle_approve_command, block=False))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(wallet, pattern="^wallet$"))
+    app.add_handler(CallbackQueryHandler(show_user_wallet, pattern="^wallet_user$"))
+    app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel$"))
+    app.add_handler(CallbackQueryHandler(admin_stats, pattern="^admin_stats$"))
+    app.add_handler(CallbackQueryHandler(admin_users, pattern="^admin_users$"))
+    app.add_handler(CallbackQueryHandler(admin_withdraws, pattern="^admin_withdraws$"))
+    app.add_handler(CallbackQueryHandler(admin_add_balance, pattern="^admin_add_balance$"))
     app.add_handler(CallbackQueryHandler(exchange, pattern="^exchange$"))
     app.add_handler(CallbackQueryHandler(lottery, pattern="^lottery$"))
     app.add_handler(CallbackQueryHandler(referral, pattern="^referral$"))
     app.add_handler(CallbackQueryHandler(history, pattern="^history$"))
+    app.add_handler(CallbackQueryHandler(help_command, pattern="^help$"))
     app.add_handler(CallbackQueryHandler(deposit_handler, pattern="^deposit$"))
     app.add_handler(CallbackQueryHandler(withdraw_handler, pattern="^withdraw$"))
     app.add_handler(CallbackQueryHandler(transfer_handler, pattern="^transfer$"))
+    app.add_handler(CallbackQueryHandler(buy_mkn, pattern="^buy_mkn$"))
+    app.add_handler(CallbackQueryHandler(sell_mkn, pattern="^sell_mkn$"))
     app.add_handler(CallbackQueryHandler(check_payment, pattern="^check_"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    print("🤖 Криптокошелек запущен!")
+    print("🤖 CryptoKan запущен!")
     app.run_polling()
 
 if __name__ == "__main__":
