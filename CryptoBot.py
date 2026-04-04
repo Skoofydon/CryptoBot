@@ -12,13 +12,13 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ============================================================================
-# КОНФИГУРАЦИЯ (ТВОИ ТОКЕНЫ ВСТАВЛЕНЫ)
+# КОНФИГУРАЦИЯ (ТВОЙ НОВЫЙ КЛЮЧ ВСТАВЛЕН)
 # ============================================================================
 
 @dataclass
 class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
-    CRYPTOPAY_API_KEY: str = "562330:AAEmCmEd1QJks9H1I88KCIVyQdj93Z16EAe"
+    CRYPTOPAY_API_KEY: str = "562330:AAEmCmEd1QJks9H1I88KCIVyQdj93Z16EAe"  # НОВЫЙ РАБОЧИЙ КЛЮЧ
     ADMIN_ID: int = 8780917575
     BOT_USERNAME: str = "CryptoKanS1x_bot"
     
@@ -108,6 +108,7 @@ class Database:
             c.execute('''CREATE TABLE IF NOT EXISTS withdraw_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
+                username TEXT,
                 amount REAL,
                 address TEXT,
                 fee REAL,
@@ -127,6 +128,16 @@ class Database:
                 return dict(zip(columns, row))
         return None
     
+    def get_user_by_username(self, username: str) -> Optional[Dict]:
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT * FROM users WHERE username = ?", (username,))
+            row = c.fetchone()
+            if row:
+                columns = [d[0] for d in c.description]
+                return dict(zip(columns, row))
+        return None
+    
     def create_user(self, user_id: int, username: str = None, first_name: str = None,
                     referrer_id: int = None) -> bool:
         with self._get_connection() as conn:
@@ -139,6 +150,12 @@ class Database:
                 return True
             except sqlite3.IntegrityError:
                 return False
+    
+    def update_username(self, user_id: int, username: str):
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
+            conn.commit()
     
     def get_balance(self, user_id: int, currency: str) -> float:
         col = f"balance_{currency.lower()}"
@@ -225,11 +242,11 @@ class Database:
             c.execute("DELETE FROM pending_invoices WHERE invoice_id = ?", (invoice_id,))
             conn.commit()
     
-    def add_withdraw_request(self, user_id: int, amount: float, address: str, fee: float, currency: str = "USDT") -> int:
+    def add_withdraw_request(self, user_id: int, username: str, amount: float, address: str, fee: float, currency: str = "USDT") -> int:
         with self._get_connection() as conn:
             c = conn.cursor()
-            c.execute('''INSERT INTO withdraw_requests (user_id, amount, address, fee, currency)
-                         VALUES (?, ?, ?, ?, ?)''', (user_id, amount, address, fee, currency))
+            c.execute('''INSERT INTO withdraw_requests (user_id, username, amount, address, fee, currency)
+                         VALUES (?, ?, ?, ?, ?, ?)''', (user_id, username, amount, address, fee, currency))
             conn.commit()
             return c.lastrowid
     
@@ -241,10 +258,26 @@ class Database:
             columns = [d[0] for d in c.description]
             return [dict(zip(columns, row)) for row in rows]
     
+    def get_withdraw_request(self, request_id: int) -> Optional[Dict]:
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute("SELECT * FROM withdraw_requests WHERE id = ?", (request_id,))
+            row = c.fetchone()
+            if row:
+                columns = [d[0] for d in c.description]
+                return dict(zip(columns, row))
+        return None
+    
     def approve_withdraw(self, request_id: int):
         with self._get_connection() as conn:
             c = conn.cursor()
             c.execute("UPDATE withdraw_requests SET status = 'approved' WHERE id = ?", (request_id,))
+            conn.commit()
+    
+    def reject_withdraw(self, request_id: int):
+        with self._get_connection() as conn:
+            c = conn.cursor()
+            c.execute("UPDATE withdraw_requests SET status = 'rejected' WHERE id = ?", (request_id,))
             conn.commit()
     
     def get_all_users(self) -> List[Dict]:
@@ -387,6 +420,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or str(user_id)
     first_name = update.effective_user.first_name
     
+    # Обновляем username в базе (на случай если изменился)
+    user = db.get_user(user_id)
+    if user and user.get('username') != username:
+        db.update_username(user_id, username)
+    
     args = context.args
     referrer_id = None
     if args and args[0].startswith("ref_"):
@@ -397,7 +435,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     
-    user = db.get_user(user_id)
     if not user:
         db.create_user(user_id, username, first_name, referrer_id)
         if referrer_id:
@@ -536,7 +573,7 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = "👥 *Пользователи CryptoKan*\n\n"
     for u in users[:20]:
-        text += f"🆔 {u['user_id']} | @{u['username'] or 'no_username'}\n"
+        text += f"🆔 `{u['user_id']}` | @{u['username'] or 'no_username'}\n"
         text += f"   💰 USDT: {u['balance_usdt']:.2f} | 💎 MKN: {u['balance_mkn']:.0f}\n"
         text += f"   📅 {u['created_at'][:10]}\n\n"
     
@@ -560,12 +597,15 @@ async def admin_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = "💸 *Заявки на вывод*\n\n"
     for w in withdraws:
-        text += f"🆔 #{w['id']} | Пользователь: {w['user_id']}\n"
+        text += f"🆔 *Заявка #{w['id']}*\n"
+        text += f"👤 Пользователь: @{w['username'] or w['user_id']} | `{w['user_id']}`\n"
         text += f"💰 Сумма: {w['amount']} {w['currency']}\n"
-        text += f"📤 Адрес: {w['address'][:20]}...\n"
+        text += f"📤 Адрес: `{w['address'][:30]}...`\n"
         text += f"⚡️ Комиссия: {w['fee']}%\n"
         text += f"📅 {w['created_at'][:10]}\n"
-        text += f"✅ /approve_{w['id']} - подтвердить\n\n"
+        text += f"➡️ Отправь USDT на адрес выше\n"
+        text += f"✅ `/approve_{w['id']}` - подтвердить\n"
+        text += f"❌ `/reject_{w['id']}` - отклонить\n\n"
     
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
 
@@ -579,7 +619,7 @@ async def admin_add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     awaiting_state[user_id] = "admin_add"
     await query.edit_message_text(
-        "➕ *Пополнение пользователя*\n\nВведи ID пользователя, валюту и сумму через пробел:\nПример: `123456789 USDT 100`\nПример: `987654321 MKN 500`",
+        "➕ *Пополнение пользователя*\n\nВведи ID пользователя, валюту и сумму через пробел:\nПример: `123456789 USDT 100`\nПример: `987654321 MKN 500`\n\n*Где взять ID?* В разделе 👥 Все пользователи",
         reply_markup=admin_keyboard,
         parse_mode="Markdown"
     )
@@ -599,7 +639,7 @@ async def withdraw_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     awaiting_state[query.from_user.id] = "withdraw"
     await query.edit_message_text(
-        f"📤 *Вывод из CryptoKan*\n\nВведи адрес кошелька USDT (TRC20) и сумму через пробел\nМин. сумма: {CONFIG.MIN_WITHDRAW} USDT\nКомиссия: {CONFIG.WITHDRAW_FEE}%\nПример: `TVqP8Ur8f1DUUM3k4QxVxz1Qn1Gddq4VFT 10`",
+        f"📤 *Вывод из CryptoKan*\n\nВведи адрес кошелька USDT (TRC20) и сумму через пробел\nМин. сумма: {CONFIG.MIN_WITHDRAW} USDT\nКомиссия: {CONFIG.WITHDRAW_FEE}%\nПример: `TVqP8Ur8f1DUUM3k4QxVxz1Qn1Gddq4VFT 10`\n\n*После отправки заявки — ожидай подтверждения администратора.*",
         reply_markup=back_keyboard,
         parse_mode="Markdown"
     )
@@ -771,6 +811,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = awaiting_state.get(user_id)
     
+    # Обновляем username если изменился
+    user = db.get_user(user_id)
+    username = update.effective_user.username or str(user_id)
+    if user and user.get('username') != username:
+        db.update_username(user_id, username)
+    
     if state == "admin_add" and is_admin(user_id):
         parts = text.split()
         if len(parts) != 3:
@@ -809,7 +855,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
                 await update.message.reply_text(f"💰 *Счет на {amount} USDT*\n\nНажми «Оплатить» → оплати → «Проверить оплату»", reply_markup=keyboard, parse_mode="Markdown")
             else:
-                await update.message.reply_text("❌ Ошибка создания счета. Проверь настройки CryptoBot (нужно активировать API ключ и пополнить баланс TON)")
+                await update.message.reply_text("❌ Ошибка создания счета. Попробуй позже.")
         except:
             await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
@@ -871,10 +917,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Недостаточно. Нужно: {total:.4f} USDT (включая комиссию {CONFIG.WITHDRAW_FEE}%)")
             return
         db.update_balance(user_id, "USDT", total, "subtract")
-        db.add_withdraw_request(user_id, amount, address, fee)
+        username = update.effective_user.username or str(user_id)
+        db.add_withdraw_request(user_id, username, amount, address, CONFIG.WITHDRAW_FEE)
         db.add_transaction(user_id, "withdraw", "USDT", amount, "pending", fee=fee, details=f"Адрес: {address}")
-        await update.message.reply_text(f"✅ Заявка на вывод {amount} USDT создана!\n💰 Комиссия: {fee:.4f} USDT\n⏳ Ожидайте обработки.")
-        await context.bot.send_message(CONFIG.ADMIN_ID, f"🔔 *Новая заявка на вывод*\n👤 Пользователь: {user_id}\n💰 Сумма: {amount} USDT\n📤 Адрес: {address}\n⚡️ Комиссия: {fee:.4f} USDT", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Заявка на вывод {amount} USDT создана!\n💰 Комиссия: {fee:.4f} USDT\n⏳ Ожидайте подтверждения администратора.")
+        await context.bot.send_message(CONFIG.ADMIN_ID, f"🔔 *НОВАЯ ЗАЯВКА НА ВЫВОД*\n👤 @{username} | ID: `{user_id}`\n💰 Сумма: {amount} USDT\n📤 Адрес: `{address}`\n⚡️ Комиссия: {fee:.4f} USDT\n\n➡️ `/approve_{db.get_pending_withdraws()[-1]['id'] if db.get_pending_withdraws() else '?'}`", parse_mode="Markdown")
         awaiting_state.pop(user_id, None)
     
     elif state == "buy_mkn":
@@ -942,10 +989,71 @@ async def handle_approve_command(update: Update, context: ContextTypes.DEFAULT_T
     if text.startswith("/approve_"):
         try:
             request_id = int(text.replace("/approve_", ""))
+            request = db.get_withdraw_request(request_id)
+            if not request:
+                await update.message.reply_text(f"❌ Заявка #{request_id} не найдена")
+                return
+            if request['status'] != 'pending':
+                await update.message.reply_text(f"❌ Заявка #{request_id} уже {request['status']}")
+                return
+            
             db.approve_withdraw(request_id)
-            await update.message.reply_text(f"✅ Заявка #{request_id} подтверждена!")
-        except:
-            await update.message.reply_text("❌ Ошибка")
+            
+            # Уведомляем пользователя
+            try:
+                await context.bot.send_message(
+                    request['user_id'],
+                    f"✅ *Ваша заявка на вывод {request['amount']} USDT подтверждена!*\n\n"
+                    f"💰 Сумма к получению: {request['amount']} USDT\n"
+                    f"📤 Адрес: `{request['address']}`\n\n"
+                    f"Средства будут отправлены в ближайшее время.",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+            
+            await update.message.reply_text(f"✅ Заявка #{request_id} подтверждена! Пользователь уведомлен.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def handle_reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ Нет доступа")
+        return
+    
+    text = update.message.text.strip()
+    if text.startswith("/reject_"):
+        try:
+            request_id = int(text.replace("/reject_", ""))
+            request = db.get_withdraw_request(request_id)
+            if not request:
+                await update.message.reply_text(f"❌ Заявка #{request_id} не найдена")
+                return
+            if request['status'] != 'pending':
+                await update.message.reply_text(f"❌ Заявка #{request_id} уже {request['status']}")
+                return
+            
+            # Возвращаем баланс пользователю (сумма + комиссия)
+            total = request['amount'] + (request['amount'] * request['fee'] / 100)
+            db.update_balance(request['user_id'], "USDT", total, "add")
+            db.reject_withdraw(request_id)
+            
+            # Уведомляем пользователя
+            try:
+                await context.bot.send_message(
+                    request['user_id'],
+                    f"❌ *Ваша заявка на вывод {request['amount']} USDT отклонена!*\n\n"
+                    f"Средства возвращены на ваш баланс.\n"
+                    f"💰 Баланс: {db.get_balance(request['user_id'], 'USDT'):.4f} USDT",
+                    parse_mode="Markdown"
+                )
+            except:
+                pass
+            
+            await update.message.reply_text(f"✅ Заявка #{request_id} отклонена. Баланс пользователя восстановлен.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
 
 def main():
     update_rates()
@@ -954,6 +1062,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("swap", swap_command))
     app.add_handler(CommandHandler("approve_", handle_approve_command, block=False))
+    app.add_handler(CommandHandler("reject_", handle_reject_command, block=False))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(wallet, pattern="^wallet$"))
     app.add_handler(CallbackQueryHandler(show_user_wallet, pattern="^wallet_user$"))
