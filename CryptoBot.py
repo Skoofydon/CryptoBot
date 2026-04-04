@@ -18,7 +18,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 @dataclass
 class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
-    CRYPTOPAY_API_KEY: str = "556863:AAPMuBD5NBKWHSfsntXlARm1hZ52BCbQXMF"
+    CRYPTOPAY_API_KEY: str = "562330:AAEmCmEd1QJks9H1I88KCIVyQdj93Z16EAe"
     ADMIN_ID: int = 8780917575
     BOT_USERNAME: str = "CryptoKanS1x_bot"
     
