@@ -19,7 +19,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
     CRYPTOPAY_API_KEY: str = "562330:AAEmCmEd1QJks9H1I88KCIVyQdj93Z16EAe"  # НОВЫЙ РАБОЧИЙ КЛЮЧ
-    ADMIN_ID: int = 8780917575
+    ADMIN_ID: int = 8343022613
     BOT_USERNAME: str = "CryptoKanS1x_bot"
     
     WITHDRAW_FEE: int = 5
