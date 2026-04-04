@@ -1,4 +1,3 @@
-import os
 import json
 import sqlite3
 import random
@@ -9,22 +8,19 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-load_dotenv()
-
 # ============================================================================
-# КОНФИГУРАЦИЯ
+# КОНФИГУРАЦИЯ (токены прямо здесь)
 # ============================================================================
 
 @dataclass
 class Config:
-    BOT_TOKEN: str = os.getenv("BOT_TOKEN", "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY")
-    CRYPTOPAY_API_KEY: str = os.getenv("CRYPTOPAY_API_KEY", "556863:AAPMuBD5NBKWHSfsntXlARm1hZ52BCbQXMF")
-    ADMIN_ID: int = int(os.getenv("ADMIN_ID", "8780917575"))
-    MINI_APP_URL: str = os.getenv("MINI_APP_URL", "https://your-domain.com")
+    BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
+    CRYPTOPAY_API_KEY: str = "556863:AAPMuBD5NBKWHSfsntXlARm1hZ52BCbQXMF"
+    ADMIN_ID: int = 8780917575
+    MINI_APP_URL: str = "https://your-domain.com"
     
     WITHDRAW_FEE: int = 5
     REFERRAL_PERCENT: int = 5
@@ -44,11 +40,10 @@ CONFIG = Config()
 CURRENCIES = ["USDT", "TON", "BTC", "ETH", "SOL"]
 
 # ============================================================================
-# ОБНОВЛЕНИЕ КУРСОВ (без ccxt)
+# ОБНОВЛЕНИЕ КУРСОВ
 # ============================================================================
 
 def fetch_binance_price(symbol: str) -> Optional[float]:
-    """Получает цену с Binance"""
     try:
         url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
         with urllib.request.urlopen(url, timeout=5) as response:
@@ -59,7 +54,6 @@ def fetch_binance_price(symbol: str) -> Optional[float]:
         return None
 
 def update_rates():
-    """Обновляет курсы валют"""
     try:
         btc_price = fetch_binance_price("BTCUSDT")
         if btc_price:
@@ -81,7 +75,6 @@ def update_rates():
     except Exception as e:
         print(f"❌ Ошибка обновления курсов: {e}")
     
-    # Запускаем следующее обновление через 5 минут
     threading.Timer(300, update_rates).start()
 
 # ============================================================================
@@ -261,7 +254,6 @@ class Database:
 CRYPTOPAY_API_URL = "https://pay.crypt.bot/api"
 
 def create_invoice(amount: float, user_id: int, currency: str = "USDT") -> Tuple[Optional[str], Optional[str]]:
-    """Создает счет в CryptoBot"""
     try:
         data = {
             "asset": currency,
@@ -283,7 +275,6 @@ def create_invoice(amount: float, user_id: int, currency: str = "USDT") -> Tuple
     return None, None
 
 def check_invoice_status(invoice_id: str) -> Optional[str]:
-    """Проверяет статус счета"""
     try:
         url = f"{CRYPTOPAY_API_URL}/getInvoices?invoice_ids={invoice_id}"
         req = urllib.request.Request(url, headers={"Crypto-Pay-API-Token": CONFIG.CRYPTOPAY_API_KEY})
@@ -494,7 +485,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
                 await update.message.reply_text(f"💰 *Счет на {amount} USDT*\n\nНажми «Оплатить» → оплати → «Проверить оплату»", reply_markup=keyboard, parse_mode="Markdown")
             else:
-                await update.message.reply_text("❌ Ошибка создания счета. Убедись, что API ключ CryptoBot настроен.")
+                await update.message.reply_text("❌ Ошибка создания счета")
         except:
             await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
@@ -576,7 +567,6 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"⏳ Не оплачено. Статус: {status}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Проверить снова", callback_data=f"check_{inv_id}")]]))
 
 def main():
-    # Запускаем обновление курсов в фоновом потоке
     threading.Thread(target=update_rates, daemon=True).start()
     
     app = Application.builder().token(CONFIG.BOT_TOKEN).build()
