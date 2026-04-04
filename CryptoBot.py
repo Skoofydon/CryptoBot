@@ -12,13 +12,13 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ============================================================================
-# КОНФИГУРАЦИЯ (ТВОЙ НОВЫЙ КЛЮЧ ВСТАВЛЕН)
+# КОНФИГУРАЦИЯ
 # ============================================================================
 
 @dataclass
 class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
-    CRYPTOPAY_API_KEY: str = "562330:AAEmCmEd1QJks9H1I88KCIVyQdj93Z16EAe"  # НОВЫЙ РАБОЧИЙ КЛЮЧ
+    CRYPTOPAY_API_KEY: str = "562330:AAEmCmEd1QJks9H1I88KCIVyQdj93Z16EAe"
     ADMIN_ID: int = 8343022613
     BOT_USERNAME: str = "CryptoKanS1x_bot"
     
@@ -363,15 +363,16 @@ def create_invoice(amount: float, user_id: int, currency: str = "USDT") -> Tuple
             data=json.dumps(data).encode(),
             headers={"Crypto-Pay-API-Token": CONFIG.CRYPTOPAY_API_KEY, "Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with urllib.request.urlopen(req, timeout=15) as response:
             result = json.loads(response.read().decode())
             if result.get("ok"):
                 return result["result"]["pay_url"], str(result["result"]["invoice_id"])
             else:
                 print(f"CryptoBot error: {result}")
+                return None, None
     except Exception as e:
         print(f"Create invoice error: {e}")
-    return None, None
+        return None, None
 
 def check_invoice_status(invoice_id: str) -> Optional[str]:
     try:
@@ -420,7 +421,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.effective_user.username or str(user_id)
     first_name = update.effective_user.first_name
     
-    # Обновляем username в базе (на случай если изменился)
     user = db.get_user(user_id)
     if user and user.get('username') != username:
         db.update_username(user_id, username)
@@ -455,7 +455,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             balance_text += f"💰 {c}: `{balances[c]:.4f}`\n"
     balance_text += f"\n👥 Рефералов: {db.get_referral_count(user_id)}"
     balance_text += f"\n💎 1 MKN = {CONFIG.MKN_TO_USDT} USDT"
-    balance_text += f"\n📤 Мин. вывод: {CONFIG.MIN_WITHDRAW} USDT"
+    balance_text += f"\n📤 Мин. вывод: {CONFIG.MIN_WITHDRAW} USDT (комиссия 5%)"
     
     await update.message.reply_text(
         f"✨ *Добро пожаловать в CryptoKan* ✨\n\n{balance_text}",
@@ -511,7 +511,7 @@ async def show_user_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"💎 {c}: `{balances[c]:.2f}`\n"
         else:
             text += f"💰 {c}: `{balances[c]:.6f}`\n"
-    text += f"\n💸 Комиссия на вывод: {CONFIG.WITHDRAW_FEE}%"
+    text += f"\n💸 Комиссия на вывод: {CONFIG.WITHDRAW_FEE}% (вычитается из суммы)"
     text += f"\n💎 1 MKN = {CONFIG.MKN_TO_USDT} USDT"
     text += f"\n📤 Мин. вывод: {CONFIG.MIN_WITHDRAW} USDT"
     text += f"\n🔄 Мин. обмен MKN: {CONFIG.MIN_MKN_SWAP} MKN"
@@ -597,14 +597,15 @@ async def admin_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = "💸 *Заявки на вывод*\n\n"
     for w in withdraws:
+        user_gets = w['amount'] - (w['amount'] * w['fee'] / 100)
         text += f"🆔 *Заявка #{w['id']}*\n"
         text += f"👤 Пользователь: @{w['username'] or w['user_id']} | `{w['user_id']}`\n"
-        text += f"💰 Сумма: {w['amount']} {w['currency']}\n"
+        text += f"💰 Сумма вывода: {w['amount']} {w['currency']}\n"
+        text += f"⚡️ Комиссия ({w['fee']}%): {w['amount'] * w['fee'] / 100:.4f} {w['currency']}\n"
+        text += f"📤 Пользователь получит: {user_gets:.4f} {w['currency']}\n"
         text += f"📤 Адрес: `{w['address'][:30]}...`\n"
-        text += f"⚡️ Комиссия: {w['fee']}%\n"
         text += f"📅 {w['created_at'][:10]}\n"
-        text += f"➡️ Отправь USDT на адрес выше\n"
-        text += f"✅ `/approve_{w['id']}` - подтвердить\n"
+        text += f"✅ `/approve_{w['id']}` - подтвердить (отправь {user_gets:.4f} USDT)\n"
         text += f"❌ `/reject_{w['id']}` - отклонить\n\n"
     
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
@@ -639,7 +640,12 @@ async def withdraw_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     awaiting_state[query.from_user.id] = "withdraw"
     await query.edit_message_text(
-        f"📤 *Вывод из CryptoKan*\n\nВведи адрес кошелька USDT (TRC20) и сумму через пробел\nМин. сумма: {CONFIG.MIN_WITHDRAW} USDT\nКомиссия: {CONFIG.WITHDRAW_FEE}%\nПример: `TVqP8Ur8f1DUUM3k4QxVxz1Qn1Gddq4VFT 10`\n\n*После отправки заявки — ожидай подтверждения администратора.*",
+        f"📤 *Вывод из CryptoKan*\n\n"
+        f"Введи адрес кошелька USDT (TRC20) и сумму через пробел\n"
+        f"Мин. сумма: {CONFIG.MIN_WITHDRAW} USDT\n"
+        f"Комиссия: {CONFIG.WITHDRAW_FEE}% (вычитается из суммы)\n"
+        f"Пример: `TVqP8Ur8f1DUUM3k4QxVxz1Qn1Gddq4VFT 10`\n\n"
+        f"*Пример расчета:* при выводе 10 USDT ты получишь 9.5 USDT, комиссия 0.5 USDT",
         reply_markup=back_keyboard,
         parse_mode="Markdown"
     )
@@ -798,7 +804,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     text = "ℹ️ *CryptoKan - Помощь*\n\n"
     text += "📥 *Пополнение:* Кошелек → Пополнить → введи сумму → оплати через CryptoBot\n"
-    text += f"📤 *Вывод:* Кошелек → Вывести → адрес и сумма (мин {CONFIG.MIN_WITHDRAW} USDT, комиссия {CONFIG.WITHDRAW_FEE}%)\n"
+    text += f"📤 *Вывод:* Кошелек → Вывести → адрес и сумма (мин {CONFIG.MIN_WITHDRAW} USDT, комиссия 5% вычитается)\n"
     text += "🔄 *Перевод:* Кошелек → Перевести → @username сумма USDT\n"
     text += f"💎 *MKN:* 1 MKN = {CONFIG.MKN_TO_USDT} USDT, мин. обмен {CONFIG.MIN_MKN_SWAP} MKN\n"
     text += "💱 *Обмен:* /swap FROM TO AMOUNT\n"
@@ -811,7 +817,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = awaiting_state.get(user_id)
     
-    # Обновляем username если изменился
     user = db.get_user(user_id)
     username = update.effective_user.username or str(user_id)
     if user and user.get('username') != username:
@@ -855,7 +860,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ])
                 await update.message.reply_text(f"💰 *Счет на {amount} USDT*\n\nНажми «Оплатить» → оплати → «Проверить оплату»", reply_markup=keyboard, parse_mode="Markdown")
             else:
-                await update.message.reply_text("❌ Ошибка создания счета. Попробуй позже.")
+                await update.message.reply_text("❌ Ошибка создания счета. Проверь настройки CryptoBot (баланс и права API)")
         except:
             await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
@@ -899,7 +904,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == "withdraw":
         parts = text.split()
         if len(parts) != 2:
-            await update.message.reply_text("❌ Формат: АДРЕС СУММА")
+            await update.message.reply_text("❌ Формат: АДРЕС СУММА\nПример: `TVqP8Ur8f1DUUM3k4QxVxz1Qn1Gddq4VFT 10`", parse_mode="Markdown")
             return
         address, amount_str = parts
         try:
@@ -907,21 +912,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("❌ Неверная сумма")
             return
+        
         if amount < CONFIG.MIN_WITHDRAW:
             await update.message.reply_text(f"❌ Минимальная сумма вывода: {CONFIG.MIN_WITHDRAW} USDT")
             return
+        
         balance = db.get_balance(user_id, "USDT")
         fee = amount * CONFIG.WITHDRAW_FEE / 100
-        total = amount + fee
-        if balance < total:
-            await update.message.reply_text(f"❌ Недостаточно. Нужно: {total:.4f} USDT (включая комиссию {CONFIG.WITHDRAW_FEE}%)")
+        user_receives = amount - fee
+        
+        if balance < amount:
+            await update.message.reply_text(f"❌ Недостаточно средств. Нужно: {amount:.4f} USDT\n💰 Твой баланс: {balance:.4f} USDT")
             return
-        db.update_balance(user_id, "USDT", total, "subtract")
+        
+        db.update_balance(user_id, "USDT", amount, "subtract")
+        
         username = update.effective_user.username or str(user_id)
-        db.add_withdraw_request(user_id, username, amount, address, CONFIG.WITHDRAW_FEE)
+        request_id = db.add_withdraw_request(user_id, username, amount, address, CONFIG.WITHDRAW_FEE)
         db.add_transaction(user_id, "withdraw", "USDT", amount, "pending", fee=fee, details=f"Адрес: {address}")
-        await update.message.reply_text(f"✅ Заявка на вывод {amount} USDT создана!\n💰 Комиссия: {fee:.4f} USDT\n⏳ Ожидайте подтверждения администратора.")
-        await context.bot.send_message(CONFIG.ADMIN_ID, f"🔔 *НОВАЯ ЗАЯВКА НА ВЫВОД*\n👤 @{username} | ID: `{user_id}`\n💰 Сумма: {amount} USDT\n📤 Адрес: `{address}`\n⚡️ Комиссия: {fee:.4f} USDT\n\n➡️ `/approve_{db.get_pending_withdraws()[-1]['id'] if db.get_pending_withdraws() else '?'}`", parse_mode="Markdown")
+        
+        await update.message.reply_text(
+            f"✅ *Заявка на вывод создана!*\n\n"
+            f"💰 Сумма: {amount} USDT\n"
+            f"⚡️ Комиссия (5%): {fee:.4f} USDT\n"
+            f"📤 Ты получишь: {user_receives:.4f} USDT\n"
+            f"📤 Адрес: `{address}`\n\n"
+            f"⏳ Ожидай подтверждения администратора.",
+            parse_mode="Markdown"
+        )
+        
+        await context.bot.send_message(
+            CONFIG.ADMIN_ID,
+            f"🔔 *НОВАЯ ЗАЯВКА НА ВЫВОД #{request_id}*\n\n"
+            f"👤 Пользователь: @{username}\n"
+            f"🆔 ID: `{user_id}`\n"
+            f"💰 Сумма вывода: {amount} USDT\n"
+            f"⚡️ Комиссия 5%: {fee:.4f} USDT\n"
+            f"📤 Пользователь получит: {user_receives:.4f} USDT\n"
+            f"📤 Адрес: `{address}`\n\n"
+            f"✅ `/approve_{request_id}` - подтвердить (отправь {user_receives:.4f} USDT)\n"
+            f"❌ `/reject_{request_id}` - отклонить",
+            parse_mode="Markdown"
+        )
+        
         awaiting_state.pop(user_id, None)
     
     elif state == "buy_mkn":
@@ -998,13 +1031,13 @@ async def handle_approve_command(update: Update, context: ContextTypes.DEFAULT_T
                 return
             
             db.approve_withdraw(request_id)
+            user_gets = request['amount'] - (request['amount'] * request['fee'] / 100)
             
-            # Уведомляем пользователя
             try:
                 await context.bot.send_message(
                     request['user_id'],
                     f"✅ *Ваша заявка на вывод {request['amount']} USDT подтверждена!*\n\n"
-                    f"💰 Сумма к получению: {request['amount']} USDT\n"
+                    f"💰 Сумма к получению: {user_gets:.4f} USDT\n"
                     f"📤 Адрес: `{request['address']}`\n\n"
                     f"Средства будут отправлены в ближайшее время.",
                     parse_mode="Markdown"
@@ -1034,12 +1067,9 @@ async def handle_reject_command(update: Update, context: ContextTypes.DEFAULT_TY
                 await update.message.reply_text(f"❌ Заявка #{request_id} уже {request['status']}")
                 return
             
-            # Возвращаем баланс пользователю (сумма + комиссия)
-            total = request['amount'] + (request['amount'] * request['fee'] / 100)
-            db.update_balance(request['user_id'], "USDT", total, "add")
+            db.update_balance(request['user_id'], "USDT", request['amount'], "add")
             db.reject_withdraw(request_id)
             
-            # Уведомляем пользователя
             try:
                 await context.bot.send_message(
                     request['user_id'],
