@@ -1840,7 +1840,7 @@ def main():
     app.add_handler(CommandHandler("sell_mkn", sell_mkn_command))
     app.add_handler(CommandHandler("cancel_p2p", cancel_p2p_command))
     app.add_handler(CommandHandler("sendall", sendall_command))
-app.add_handler(CallbackQueryHandler(confirm_sendall, pattern="^confirm_sendall$"))
+    app.add_handler(CallbackQueryHandler(confirm_sendall, pattern="^confirm_sendall$"))
     
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(wallet, pattern="^wallet$"))
