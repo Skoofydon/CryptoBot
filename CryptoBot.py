@@ -1355,6 +1355,15 @@ async def my_investments(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"📈 Доход: +{inv['percent']}%\n"
             text += f"📅 Завершение: {inv['end_date']}\n\n"
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
+    
+    async def invest_7(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await invest_package(update, context, "7 дней")
+
+async def invest_14(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await invest_package(update, context, "14 дней")
+
+async def invest_30(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await invest_package(update, context, "30 дней")
 
 # ============================================================================
 # P2P РЫНОК (ПОЛНОСТЬЮ РАБОЧИЙ)
