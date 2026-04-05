@@ -625,7 +625,6 @@ main_keyboard = InlineKeyboardMarkup([
     [InlineKeyboardButton("👥 Рефералы", callback_data="referral")],
     [InlineKeyboardButton("📜 История", callback_data="history")],
     [InlineKeyboardButton("🏆 Рекорды", callback_data="records")],
-    [InlineKeyboardButton("🎡 Рулетка", callback_data="roulette")],
     [InlineKeyboardButton("💼 Инвестиции", callback_data="invest_menu")],
     [InlineKeyboardButton("🔄 P2P", callback_data="p2p_menu")],
     [InlineKeyboardButton("🏅 Ачивки", callback_data="achievements")],
@@ -1170,31 +1169,7 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"🎁 +{bonus} MKN! Серия: {streak+1} дней" + (" 🔥 ЮБИЛЕЙ!" if streak == 6 else "")
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
-# ============================================================================
-# РУЛЕТКА
-# ============================================================================
 
-async def roulette(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    if not db.can_claim_roulette(user_id):
-        await query.edit_message_text("🎡 Уже крутил сегодня! Завтра снова", reply_markup=back_keyboard)
-        return
-    rand = random.randint(1, 100)
-    cumulative = 0
-    reward = 10
-    for r, chance in CONFIG.ROULETTE_REWARDS.items():
-        cumulative += chance
-        if rand <= cumulative:
-            reward = r
-            break
-    db.update_balance(user_id, "MKN", reward, "add")
-    db.claim_roulette(user_id, reward)
-    db.add_transaction(user_id, "roulette", "MKN", reward, "completed")
-    db.check_all_achievements(user_id)
-    text = f"🎡 Выпало: +{reward} MKN!" + (" 🎉 ДЖЕКПОТ!" if reward >= 5000 else "")
-    await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
 # ============================================================================
 # ИНВЕСТИЦИИ
