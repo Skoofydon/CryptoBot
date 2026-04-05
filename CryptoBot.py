@@ -23,21 +23,20 @@ class Config:
     REFERRAL_PERCENT: int = 5
     REGISTRATION_BONUS: float = 100
     REFERRAL_BONUS: float = 50
-    LOTTERY_COST: float = 100
+    MIN_LOTTERY_BET: float = 100
     
     MKN_TO_USDT: float = 0.001
     EXCHANGE_FEE: float = 2
     MIN_EXCHANGE: float = 100
     MIN_WITHDRAW: float = 1.1
     P2P_FEE: float = 2
-    P2P_TIMEOUT_MINUTES: int = 30
     
     FIRST_DEPOSIT_BONUS: Dict[float, float] = None
     CASES: Dict[str, Dict] = None
     INVEST_PACKAGES: Dict[str, Dict] = None
     LEVELS: Dict[float, int] = None
     ROULETTE_REWARDS: Dict[int, float] = None
-    LOTTERY_MULTIPLIERS: Dict[int, int] = None
+    LOTTERY_MULTIPLIERS: Dict[int, Dict] = None
     ACHIEVEMENTS: Dict[str, Dict] = None
     
     def __post_init__(self):
@@ -65,7 +64,11 @@ class Config:
             self.ROULETTE_REWARDS = {10: 40, 25: 25, 50: 15, 100: 10, 200: 5, 500: 3, 1000: 1.5, 5000: 0.5}
         
         if self.LOTTERY_MULTIPLIERS is None:
-            self.LOTTERY_MULTIPLIERS = {2: 15, 5: 5, 10: 1}
+            self.LOTTERY_MULTIPLIERS = {
+                2: {"name": "x2", "chance": 15, "multiplier": 2},
+                5: {"name": "x5", "chance": 5, "multiplier": 5},
+                10: {"name": "x10", "chance": 1, "multiplier": 10}
+            }
         
         if self.ACHIEVEMENTS is None:
             self.ACHIEVEMENTS = {
@@ -158,6 +161,7 @@ class Database:
                 user_id INTEGER,
                 username TEXT,
                 amount REAL,
+                bet REAL,
                 multiplier INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
@@ -199,17 +203,6 @@ class Database:
                 amount REAL,
                 price REAL,
                 status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )''')
-            c.execute('''CREATE TABLE IF NOT EXISTS p2p_deals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id INTEGER,
-                seller_id INTEGER,
-                buyer_id INTEGER,
-                amount REAL,
-                price REAL,
-                total REAL,
-                status TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
             conn.commit()
@@ -343,11 +336,11 @@ class Database:
             c.execute("UPDATE users SET cases_opened = cases_opened + 1 WHERE user_id = ?", (user_id,))
             conn.commit()
     
-    def add_lottery_record(self, user_id: int, username: str, amount: float, multiplier: int):
+    def add_lottery_record(self, user_id: int, username: str, bet: float, multiplier: int, win: float):
         with self._get_connection() as conn:
             c = conn.cursor()
-            c.execute('''INSERT INTO lottery_records (user_id, username, amount, multiplier)
-                         VALUES (?, ?, ?, ?)''', (user_id, username, amount, multiplier))
+            c.execute('''INSERT INTO lottery_records (user_id, username, bet, multiplier, amount)
+                         VALUES (?, ?, ?, ?, ?)''', (user_id, username, bet, multiplier, win))
             conn.commit()
     
     def get_top_lottery_wins(self, limit: int = 10) -> List[Dict]:
@@ -627,7 +620,7 @@ db = Database()
 main_keyboard = InlineKeyboardMarkup([
     [InlineKeyboardButton("🏦 Кошелек", callback_data="wallet")],
     [InlineKeyboardButton("💱 Обменник", callback_data="exchange_menu")],
-    [InlineKeyboardButton("🎲 Лотерея", callback_data="lottery")],
+    [InlineKeyboardButton("🎲 Лотерея", callback_data="lottery_menu")],
     [InlineKeyboardButton("🎁 Кейсы", callback_data="cases_menu")],
     [InlineKeyboardButton("👥 Рефералы", callback_data="referral")],
     [InlineKeyboardButton("📜 История", callback_data="history")],
@@ -827,7 +820,7 @@ async def admin_add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not is_admin(query.from_user.id): return
     awaiting_state[query.from_user.id] = "admin_add"
-    await query.edit_message_text("➕ Введи: ID ВАЛЮТА СУММА\nПример: `123456789 USDT 100`", reply_markup=admin_keyboard, parse_mode="Markdown")
+    await query.edit_message_text("➕ Введи: ID ВАЛЮТА СУММА\nПример: `123456789 USDT 100`\nВалюты: USDT, MKN", reply_markup=admin_keyboard, parse_mode="Markdown")
 
 async def admin_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -918,41 +911,74 @@ async def case_gold(update: Update, context: ContextTypes.DEFAULT_TYPE): await o
 async def case_diamond(update: Update, context: ContextTypes.DEFAULT_TYPE): await open_case(update, context, "алмазный")
 
 # ============================================================================
-# ЛОТЕРЕЯ
+# ЛОТЕРЕЯ (НОВАЯ - С ВЫБОРОМ СТАВКИ)
 # ============================================================================
 
-async def lottery(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def lottery_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
-    if db.get_balance(user_id, "MKN") < CONFIG.LOTTERY_COST:
-        await query.edit_message_text(f"❌ Нужно {CONFIG.LOTTERY_COST} MKN", reply_markup=back_keyboard)
+    text = f"🎲 *Лотерея*\n\n"
+    text += f"💰 *Шансы выигрыша:*\n"
+    for mult, data in CONFIG.LOTTERY_MULTIPLIERS.items():
+        text += f"  • x{mult} — {data['chance']}%\n"
+    text += f"\n📊 *Кэшбэк:* 10% от проигрыша (начислится завтра)\n"
+    text += f"🎚 *Уровень:* +{db.get_user_level(query.from_user.id)}% к выигрышу\n"
+    text += f"\n⚡️ Введи сумму ставки (мин {CONFIG.MIN_LOTTERY_BET} MKN):"
+    awaiting_state[query.from_user.id] = "lottery_bet"
+    await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
+
+async def lottery_play(update: Update, context: ContextTypes.DEFAULT_TYPE, bet: float):
+    user_id = update.effective_user.id
+    username = update.effective_user.username or str(user_id)
+    
+    if db.get_balance(user_id, "MKN") < bet:
+        await update.message.reply_text(f"❌ Недостаточно MKN. Нужно: {bet:.0f} MKN", parse_mode="Markdown")
         return
-    db.update_balance(user_id, "MKN", CONFIG.LOTTERY_COST, "subtract")
-    db.add_transaction(user_id, "lottery_ticket", "MKN", CONFIG.LOTTERY_COST, "completed")
+    
+    db.update_balance(user_id, "MKN", bet, "subtract")
+    db.add_transaction(user_id, "lottery_ticket", "MKN", bet, "completed", details=f"Ставка {bet} MKN")
+    
     rand = random.randint(1, 100)
     multiplier = 1
-    for mult, chance in CONFIG.LOTTERY_MULTIPLIERS.items():
-        if rand <= chance:
-            multiplier = mult
+    selected_mult = None
+    
+    for mult, data in CONFIG.LOTTERY_MULTIPLIERS.items():
+        if rand <= data['chance']:
+            multiplier = data['multiplier']
+            selected_mult = mult
             break
+    
     level_bonus = db.get_user_level(user_id)
+    
     if multiplier > 1:
-        prize = CONFIG.LOTTERY_COST * multiplier
+        prize = bet * multiplier
         bonus = int(prize * level_bonus / 100)
         total = prize + bonus
         db.update_balance(user_id, "MKN", total, "add")
-        db.add_transaction(user_id, "lottery_win", "MKN", total, "completed")
-        db.add_lottery_record(user_id, query.from_user.username or str(user_id), total, multiplier)
+        db.add_transaction(user_id, "lottery_win", "MKN", total, "completed", details=f"Выигрыш x{multiplier} со ставки {bet}")
+        db.add_lottery_record(user_id, username, bet, multiplier, total)
         if multiplier == 10:
             db.check_all_achievements(user_id)
-        text = f"🎉 ВЫИГРЫШ x{multiplier}! +{total} MKN"
+        text = f"🎉 *ВЫИГРЫШ!*\n"
+        text += f"💰 Ставка: {bet:.0f} MKN\n"
+        text += f"🎲 Множитель: x{multiplier}\n"
+        text += f"💎 Выигрыш: {prize:.0f} MKN"
+        if bonus > 0:
+            text += f"\n🎚 +{level_bonus}% от уровня: +{bonus} MKN"
+        text += f"\n\n💰 Итого: +{total:.0f} MKN"
     else:
-        cashback = CONFIG.LOTTERY_COST * 0.1
+        cashback = bet * 0.1
         db.add_cashback(user_id, cashback)
-        text = f"😢 Проигрыш -{CONFIG.LOTTERY_COST} MKN\n💰 Кэшбэк: +{cashback:.1f} MKN (завтра)"
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🎲 Еще", callback_data="lottery"), InlineKeyboardButton("🔙 Назад", callback_data="menu")]])
-    await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
+        text = f"😢 *ПРОИГРЫШ*\n"
+        text += f"💰 Ставка: {bet:.0f} MKN\n"
+        text += f"🎲 Кэшбэк 10%: +{cashback:.1f} MKN (завтра)\n"
+        text += f"💎 Баланс MKN: {db.get_balance(user_id, 'MKN'):.2f}"
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎲 Сыграть еще", callback_data="lottery_menu")],
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="menu")]
+    ])
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 # ============================================================================
 # РЕКОРДЫ
@@ -1163,7 +1189,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = "ℹ️ *Помощь*\n\n📥 Пополнение: вручную через админа\n📤 Вывод: кошелек → вывести\n🔄 Перевод: @username 10 USDT\n💱 Обмен: /buy или /sell\n🎲 Лотерея: 100 MKN, кэшбэк 10%\n🎁 Кейсы: 3 типа\n🎡 Рулетка: бесплатно раз в день\n💼 Инвестиции: заморозка USDT\n🔄 P2P: купить/продать MKN\n🏅 Ачивки: награды за действия\n🔑 Промокод: /code КОД"
+    text = "ℹ️ *Помощь*\n\n📥 Пополнение: вручную через админа\n📤 Вывод: кошелек → вывести\n🔄 Перевод: @username 10 USDT\n💱 Обмен: /buy или /sell\n🎲 Лотерея: введи сумму → выбери множитель\n🎁 Кейсы: 3 типа\n🎡 Рулетка: бесплатно раз в день\n💼 Инвестиции: заморозка USDT\n🔄 P2P: купить/продать MKN\n🏅 Ачивки: награды за действия\n🔑 Промокод: /code КОД"
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
 async def deposit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1190,7 +1216,7 @@ async def check_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("⏳ Проверка...", reply_markup=back_keyboard)
 
 # ============================================================================
-# АДМИН-КОМАНДЫ (РАБОЧИЕ)
+# АДМИН-КОМАНДЫ
 # ============================================================================
 
 async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1269,6 +1295,7 @@ async def buy_mkn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ Недостаточно USDT")
                 return
             db.update_balance(update.effective_user.id, "USDT", total, "subtract")
+            db.update_balance(update.effective_user.id, "MKN", order['amount'], "add")
             await update.message.reply_text(f"✅ Вы купили {order['amount']:.0f} MKN за {total:.4f} USDT")
             await context.bot.send_message(order['user_id'], f"🔔 Пользователь @{update.effective_user.username} купил {order['amount']:.0f} MKN")
             db.delete_p2p_order(order_id)
@@ -1289,6 +1316,7 @@ async def sell_mkn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             db.update_balance(update.effective_user.id, "MKN", order['amount'], "subtract")
             total = order['amount'] * order['price'] / 1000
+            db.update_balance(update.effective_user.id, "USDT", total, "add")
             await update.message.reply_text(f"✅ Вы продали {order['amount']:.0f} MKN за {total:.4f} USDT")
             await context.bot.send_message(order['user_id'], f"🔔 Пользователь @{update.effective_user.username} продал {order['amount']:.0f} MKN")
             db.delete_p2p_order(order_id)
@@ -1321,6 +1349,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = awaiting_state.get(user_id)
     
+    # Обновляем username
+    user = db.get_user(user_id)
+    username = update.effective_user.username or str(user_id)
+    if user and user.get('username') != username:
+        db.update_username(user_id, username)
+    
+    # Лотерея - ввод ставки
+    if state == "lottery_bet":
+        try:
+            bet = float(text)
+            if bet < CONFIG.MIN_LOTTERY_BET:
+                await update.message.reply_text(f"❌ Минимальная ставка: {CONFIG.MIN_LOTTERY_BET} MKN")
+                return
+            if bet > db.get_balance(user_id, "MKN"):
+                await update.message.reply_text(f"❌ Недостаточно MKN. Баланс: {db.get_balance(user_id, 'MKN'):.2f} MKN")
+                return
+            await lottery_play(update, context, bet)
+        except:
+            await update.message.reply_text("❌ Введи число")
+        awaiting_state.pop(user_id, None)
+        return
+    
+    # Админ-команды
     if state == "admin_add" and is_admin(user_id):
         parts = text.split()
         if len(parts) == 3:
@@ -1328,8 +1379,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 target_id = int(parts[0])
                 currency = parts[1].upper()
                 amount = float(parts[2])
+                if currency not in CURRENCIES:
+                    await update.message.reply_text(f"❌ Доступны: USDT, MKN")
+                    return
                 db.admin_add_balance(target_id, currency, amount)
-                await update.message.reply_text(f"✅ Начислено {amount} {currency}")
+                await update.message.reply_text(f"✅ Начислено {amount} {currency} пользователю {target_id}")
+                await context.bot.send_message(target_id, f"👑 Администратор начислил вам {amount} {currency}!", parse_mode="Markdown")
             except:
                 await update.message.reply_text("❌ Ошибка")
         awaiting_state.pop(user_id, None)
@@ -1345,7 +1400,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for u in users:
                     db.update_balance(u['user_id'], currency, amount, "add")
                     count += 1
-                await update.message.reply_text(f"✅ Подарок отправлен {count} пользователям")
+                await update.message.reply_text(f"✅ Подарок {amount} {currency} отправлен {count} пользователям")
             except:
                 await update.message.reply_text("❌ Ошибка")
         awaiting_state.pop(user_id, None)
@@ -1358,18 +1413,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 amount = float(amount_str)
                 uses = int(uses_str)
                 if db.create_promo_code(code, currency, amount, uses, user_id):
-                    await update.message.reply_text(f"✅ Промокод {code.upper()} создан")
+                    await update.message.reply_text(f"✅ Промокод {code.upper()} создан на {amount} {currency} ({uses} использований)")
                 else:
                     await update.message.reply_text("❌ Такой код уже есть")
             except:
                 await update.message.reply_text("❌ Ошибка")
         awaiting_state.pop(user_id, None)
     
+    # Пользовательские команды
     elif state == "deposit":
         try:
             amount = float(text)
             if amount >= 1:
-                await update.message.reply_text(f"💰 Заявка на {amount} USDT отправлена админу")
+                await update.message.reply_text(f"💰 Заявка на пополнение {amount} USDT отправлена админу")
                 await context.bot.send_message(CONFIG.ADMIN_ID, f"🔔 Заявка на пополнение {amount} USDT от @{update.effective_user.username}\n✅ /deposit_confirm {user_id} {amount}")
             else:
                 await update.message.reply_text("❌ Минимум 1 USDT")
@@ -1388,12 +1444,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if db.get_balance(user_id, "USDT") >= amount:
                         db.update_balance(user_id, "USDT", amount, "subtract")
                         req_id = db.add_withdraw_request(user_id, update.effective_user.username or str(user_id), amount, address, CONFIG.WITHDRAW_FEE)
-                        await update.message.reply_text(f"✅ Заявка #{req_id} создана! Получите {amount - fee:.4f} USDT")
+                        await update.message.reply_text(f"✅ Заявка #{req_id} на вывод {amount} USDT создана! Получите {amount - fee:.4f} USDT")
                         await context.bot.send_message(CONFIG.ADMIN_ID, f"🔔 Заявка #{req_id} на вывод {amount} USDT от @{update.effective_user.username}\n✅ /approve_{req_id}\n❌ /reject_{req_id}")
                     else:
-                        await update.message.reply_text("❌ Недостаточно средств")
+                        await update.message.reply_text("❌ Недостаточно USDT")
                 else:
-                    await update.message.reply_text(f"❌ Мин. {CONFIG.MIN_WITHDRAW} USDT")
+                    await update.message.reply_text(f"❌ Минимальная сумма вывода: {CONFIG.MIN_WITHDRAW} USDT")
             except:
                 await update.message.reply_text("❌ Ошибка")
         else:
@@ -1407,6 +1463,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 amount = float(parts[1])
                 currency = parts[2].upper()
+                if currency not in CURRENCIES:
+                    await update.message.reply_text(f"❌ Доступны: USDT, MKN")
+                    return
                 if db.get_balance(user_id, currency) >= amount:
                     try:
                         target = await context.bot.get_chat(target_name)
@@ -1433,7 +1492,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await update.message.reply_text("❌ Недостаточно USDT")
             else:
-                await update.message.reply_text(f"❌ Мин. {CONFIG.MIN_EXCHANGE} MKN")
+                await update.message.reply_text(f"❌ Минимум {CONFIG.MIN_EXCHANGE} MKN")
         except:
             await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
@@ -1450,7 +1509,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     await update.message.reply_text("❌ Недостаточно MKN")
             else:
-                await update.message.reply_text(f"❌ Мин. {CONFIG.MIN_EXCHANGE} MKN")
+                await update.message.reply_text(f"❌ Минимум {CONFIG.MIN_EXCHANGE} MKN")
         except:
             await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
@@ -1466,6 +1525,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         db.update_balance(user_id, "USDT", amount, "subtract")
                         db.add_investment(user_id, days_key, amount, pkg['days'], pkg['percent'])
                         await update.message.reply_text(f"✅ Инвестиция {days_key} на {amount} USDT оформлена! Доход +{pkg['percent']}% через {pkg['days']} дней")
+                        await context.bot.send_message(CONFIG.ADMIN_ID, f"📊 Новая инвестиция от @{update.effective_user.username}\n📦 {days_key} | {amount} USDT | +{pkg['percent']}%")
                     else:
                         await update.message.reply_text("❌ Недостаточно USDT")
                 else:
@@ -1482,6 +1542,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     amount = float(amount_str)
                     price = float(price_str)
+                    if otype == 'sell' and db.get_balance(user_id, "MKN") < amount:
+                        await update.message.reply_text(f"❌ Недостаточно MKN. Баланс: {db.get_balance(user_id, 'MKN'):.2f}")
+                        return
                     db.add_p2p_order(user_id, update.effective_user.username or str(user_id), otype, amount, price)
                     await update.message.reply_text(f"✅ Объявление {otype} {amount:.0f} MKN по {price} USDT/1000 создано")
                 except:
@@ -1540,7 +1603,7 @@ def main():
     app.add_handler(CallbackQueryHandler(case_gold, pattern="^case_gold$"))
     app.add_handler(CallbackQueryHandler(case_diamond, pattern="^case_diamond$"))
     
-    app.add_handler(CallbackQueryHandler(lottery, pattern="^lottery$"))
+    app.add_handler(CallbackQueryHandler(lottery_menu, pattern="^lottery_menu$"))
     app.add_handler(CallbackQueryHandler(records, pattern="^records$"))
     app.add_handler(CallbackQueryHandler(daily, pattern="^daily$"))
     app.add_handler(CallbackQueryHandler(roulette, pattern="^roulette$"))
