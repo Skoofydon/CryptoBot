@@ -1867,7 +1867,6 @@ def main():
     app.add_handler(CallbackQueryHandler(lottery_menu, pattern="^lottery_menu$"))
     app.add_handler(CallbackQueryHandler(records, pattern="^records$"))
     app.add_handler(CallbackQueryHandler(daily, pattern="^daily$"))
-    app.add_handler(CallbackQueryHandler(roulette, pattern="^roulette$"))
     
     app.add_handler(CallbackQueryHandler(invest_menu, pattern="^invest_menu$"))
     app.add_handler(CallbackQueryHandler(invest_7, pattern="^invest_7$"))
