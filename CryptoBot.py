@@ -16,7 +16,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 @dataclass
 class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
-    ADMIN_ID: int = 8343022613
+    ADMIN_ID: int = 8780917575
     BOT_USERNAME: str = "CryptoKanS1x_bot"
     
     WITHDRAW_FEE: int = 5
@@ -35,7 +35,6 @@ class Config:
     CASES: Dict[str, Dict] = None
     INVEST_PACKAGES: Dict[str, Dict] = None
     LEVELS: Dict[float, int] = None
-    ROULETTE_REWARDS: Dict[int, float] = None
     LOTTERY_MULTIPLIERS: Dict[int, Dict] = None
     ACHIEVEMENTS: Dict[str, Dict] = None
     
@@ -59,9 +58,6 @@ class Config:
         
         if self.LEVELS is None:
             self.LEVELS = {0: 0, 10: 2, 50: 4, 200: 6, 500: 8, 1000: 10}
-        
-        if self.ROULETTE_REWARDS is None:
-            self.ROULETTE_REWARDS = {10: 40, 25: 25, 50: 15, 100: 10, 200: 5, 500: 3, 1000: 1.5, 5000: 0.5}
         
         if self.LOTTERY_MULTIPLIERS is None:
             self.LOTTERY_MULTIPLIERS = {
@@ -120,10 +116,10 @@ class Database:
                 roulette_max_win REAL DEFAULT 0,
                 daily_streak INTEGER DEFAULT 0,
                 last_daily DATE,
-                last_roulette DATE,
                 first_deposit_bonus INTEGER DEFAULT 0,
                 cashback_pending REAL DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
             c.execute('''CREATE TABLE IF NOT EXISTS investments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -313,21 +309,6 @@ class Database:
             c = conn.cursor()
             c.execute("UPDATE users SET daily_streak = ?, last_daily = ? WHERE user_id = ?",
                       (streak, date.today().isoformat(), user_id))
-            conn.commit()
-    
-    def can_claim_roulette(self, user_id: int) -> bool:
-        user = self.get_user(user_id)
-        if not user or not user.get('last_roulette'):
-            return True
-        last = user.get('last_roulette')
-        last_date = datetime.strptime(last, "%Y-%m-%d").date()
-        return date.today() > last_date
-    
-    def claim_roulette(self, user_id: int, win_amount: float):
-        with self._get_connection() as conn:
-            c = conn.cursor()
-            c.execute("UPDATE users SET last_roulette = ?, roulette_max_win = MAX(roulette_max_win, ?) WHERE user_id = ?",
-                      (date.today().isoformat(), win_amount, user_id))
             conn.commit()
     
     def increment_cases_opened(self, user_id: int):
@@ -523,7 +504,7 @@ class Database:
     def get_all_users(self) -> List[Dict]:
         with self._get_connection() as conn:
             c = conn.cursor()
-            c.execute("SELECT user_id, username, balance_usdt, balance_mkn, total_deposited, created_at FROM users ORDER BY total_deposited DESC")
+            c.execute("SELECT user_id, username, balance_usdt, balance_mkn, total_deposited, created_at FROM users ORDER BY created_at DESC")
             rows = c.fetchall()
             columns = ['user_id', 'username', 'balance_usdt', 'balance_mkn', 'total_deposited', 'created_at']
             return [dict(zip(columns, row)) for row in rows]
@@ -605,10 +586,6 @@ class Database:
         mkn_balance = user.get('balance_mkn', 0)
         if mkn_balance >= 1000000 and not self.check_achievement(user_id, "millionaire"):
             self.add_achievement(user_id, "millionaire", CONFIG.ACHIEVEMENTS["millionaire"]["reward"])
-        
-        roulette_max = user.get('roulette_max_win', 0)
-        if roulette_max >= 5000 and not self.check_achievement(user_id, "fortune"):
-            self.add_achievement(user_id, "fortune", CONFIG.ACHIEVEMENTS["fortune"]["reward"])
 
 
 db = Database()
@@ -722,97 +699,6 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"✨ *CryptoKan* ✨\n\n💰 USDT: {balances['USDT']:.4f}\n💎 MKN: {balances['MKN']:.2f}\n\n👥 Рефералов: {db.get_referral_count(user_id)}\n🎚 Уровень: +{level_bonus}%"
     await query.edit_message_text(text, reply_markup=main_keyboard, parse_mode="Markdown")
 
-# ============================================================================
-# РАССЫЛКА ОТ АДМИНА
-# ============================================================================
-
-async def sendall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение всем пользователям бота (только админ)"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Нет доступа")
-        return
-    
-    # Получаем текст после команды /sendall
-    text = update.message.text.replace("/sendall", "").strip()
-    if not text:
-        await update.message.reply_text(
-            "❌ *Как использовать:*\n"
-            "`/sendall Текст сообщения`\n\n"
-            "📌 *Пример:*\n"
-            "`/sendall Привет! У нас новый розыгрыш!`",
-            parse_mode="Markdown"
-        )
-        return
-    
-    # Подтверждение перед отправкой
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Да, отправить", callback_data="confirm_sendall")],
-        [InlineKeyboardButton("❌ Нет, отмена", callback_data="menu")]
-    ])
-    
-    # Сохраняем текст в контексте
-    context.user_data['sendall_text'] = text
-    
-    await update.message.reply_text(
-        f"📢 *Подтверждение рассылки*\n\n"
-        f"Текст сообщения:\n"
-        f"`{text}`\n\n"
-        f"⚠️ Сообщение получат ВСЕ пользователи бота.\n"
-        f"Отправить?",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
-    )
-
-async def confirm_sendall(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение отправки рассылки"""
-    query = update.callback_query
-    await query.answer()
-    
-    if not is_admin(query.from_user.id):
-        await query.edit_message_text("❌ Нет доступа")
-        return
-    
-    text = context.user_data.get('sendall_text')
-    if not text:
-        await query.edit_message_text("❌ Текст не найден")
-        return
-    
-    # Получаем всех пользователей
-    with db._get_connection() as conn:
-        c = conn.cursor()
-        c.execute("SELECT user_id FROM users")
-        users = c.fetchall()
-    
-    if not users:
-        await query.edit_message_text("❌ Нет пользователей для рассылки")
-        return
-    
-    await query.edit_message_text(f"⏳ Начинаю рассылку {len(users)} пользователям...")
-    
-    success = 0
-    fail = 0
-    
-    for user in users:
-        try:
-            await context.bot.send_message(
-                user[0],
-                f"📢 *Сообщение от администратора*\n\n{text}",
-                parse_mode="Markdown"
-            )
-            success += 1
-            await asyncio.sleep(0.05)  # Пауза, чтобы не заблокировали
-        except:
-            fail += 1
-    
-    await query.edit_message_text(
-        f"✅ *Рассылка завершена!*\n\n"
-        f"📨 Доставлено: {success}\n"
-        f"❌ Ошибок: {fail}",
-        parse_mode="Markdown"
-    )
-    
-    context.user_data.pop('sendall_text', None)
-
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -842,7 +728,7 @@ async def show_user_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 # ============================================================================
-# АДМИН-ПАНЕЛЬ (ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ)
+# АДМИН-ПАНЕЛЬ
 # ============================================================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -868,24 +754,20 @@ async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not is_admin(query.from_user.id): return
     
-    with db._get_connection() as conn:
-        c = conn.cursor()
-        c.execute("SELECT user_id, username, balance_usdt, balance_mkn, total_deposited, created_at FROM users ORDER BY created_at DESC")
-        rows = c.fetchall()
-    
-    if not rows:
+    users = db.get_all_users()
+    if not users:
         await query.edit_message_text("📭 Нет пользователей", reply_markup=admin_keyboard)
         return
     
     text = "👥 *Все пользователи*\n\n"
-    for row in rows[:30]:
-        text += f"🆔 `{row[0]}` | @{row[1] or 'нет'}\n"
-        text += f"   💰 USDT: {row[2]:.2f} | 💎 MKN: {row[3]:.0f}\n"
-        text += f"   📥 Депозитов: {row[4]:.2f} USDT\n"
-        text += f"   📅 {row[5][:10]}\n\n"
+    for u in users[:30]:
+        text += f"🆔 `{u['user_id']}` | @{u['username'] or 'нет'}\n"
+        text += f"   💰 USDT: {u['balance_usdt']:.2f} | 💎 MKN: {u['balance_mkn']:.0f}\n"
+        text += f"   📥 Депозитов: {u['total_deposited']:.2f} USDT\n"
+        text += f"   📅 {u['created_at'][:10]}\n\n"
     
-    if len(rows) > 30:
-        text += f"... и еще {len(rows) - 30} пользователей"
+    if len(users) > 30:
+        text += f"... и еще {len(users) - 30} пользователей"
     
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
 
@@ -914,25 +796,18 @@ async def admin_investments(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not is_admin(query.from_user.id): return
     
-    with db._get_connection() as conn:
-        c = conn.cursor()
-        c.execute('''SELECT i.id, i.user_id, u.username, i.package, i.amount, i.percent, i.start_date, i.end_date, i.status
-                     FROM investments i
-                     LEFT JOIN users u ON i.user_id = u.user_id
-                     WHERE i.status = 'active'
-                     ORDER BY i.end_date ASC''')
-        rows = c.fetchall()
-    
-    if not rows:
+    invs = db.get_active_investments()
+    if not invs:
         await query.edit_message_text("📭 Нет активных инвестиций", reply_markup=admin_keyboard)
         return
     
     text = "📊 *Активные инвестиции*\n\n"
-    for inv in rows:
-        text += f"🆔 #{inv[0]} | @{inv[2] or inv[1]}\n"
-        text += f"📦 {inv[3]} | {inv[4]} USDT | +{inv[5]}%\n"
-        text += f"📅 Начало: {inv[6]}\n"
-        text += f"📅 Завершение: {inv[7]}\n\n"
+    for inv in invs:
+        user = db.get_user(inv['user_id'])
+        username = user.get('username') if user else str(inv['user_id'])
+        text += f"🆔 @{username}\n"
+        text += f"📦 {inv['package']} | {inv['amount']} USDT | +{inv['percent']}%\n"
+        text += f"📅 Завершение: {inv['end_date']}\n\n"
     
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
 
@@ -982,105 +857,92 @@ async def admin_create_promo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 # ============================================================================
-# АДМИН-КОМАНДЫ
+# РАССЫЛКА ОТ АДМИНА
 # ============================================================================
 
-async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def sendall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет сообщение всем пользователям бота (только админ)"""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Нет доступа")
         return
-    text = update.message.text.strip()
-    if not text.startswith("/approve_"):
-        return
-    try:
-        req_id = int(text.replace("/approve_", ""))
-        req = db.get_withdraw_request(req_id)
-        if not req or req['status'] != 'pending':
-            await update.message.reply_text(f"❌ Заявка #{req_id} не найдена или уже обработана")
-            return
-        db.approve_withdraw(req_id)
-        user_gets = req['amount'] - (req['amount'] * req['fee'] / 100)
-        await context.bot.send_message(
-            req['user_id'], 
-            f"✅ *Ваша заявка на вывод {req['amount']} USDT обработана!*\n\n"
-            f"💰 Получено: {user_gets:.4f} USDT\n"
-            f"📤 Чек отправлен в @CryptoBot\n\n"
-            f"Проверьте диалог с @CryptoBot",
+    
+    text = update.message.text.replace("/sendall", "").strip()
+    if not text:
+        await update.message.reply_text(
+            "❌ *Как использовать:*\n"
+            "`/sendall Текст сообщения`\n\n"
+            "📌 *Пример:*\n"
+            "`/sendall Привет! У нас новый розыгрыш!`",
             parse_mode="Markdown"
         )
-        await update.message.reply_text(f"✅ Заявка #{req_id} подтверждена. Чек отправлен пользователю.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Нет доступа")
         return
-    text = update.message.text.strip()
-    if not text.startswith("/reject_"):
-        return
-    try:
-        req_id = int(text.replace("/reject_", ""))
-        req = db.get_withdraw_request(req_id)
-        if not req or req['status'] != 'pending':
-            await update.message.reply_text(f"❌ Заявка #{req_id} не найдена или уже обработана")
-            return
-        db.update_balance(req['user_id'], "USDT", req['amount'], "add")
-        db.reject_withdraw(req_id)
-        await context.bot.send_message(req['user_id'], f"❌ Заявка на вывод {req['amount']} USDT отклонена. Средства возвращены.", parse_mode="Markdown")
-        await update.message.reply_text(f"✅ Заявка #{req_id} отклонена")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, отправить", callback_data="confirm_sendall")],
+        [InlineKeyboardButton("❌ Нет, отмена", callback_data="menu")]
+    ])
+    
+    context.user_data['sendall_text'] = text
+    
+    await update.message.reply_text(
+        f"📢 *Подтверждение рассылки*\n\n"
+        f"Текст сообщения:\n"
+        f"`{text}`\n\n"
+        f"⚠️ Сообщение получат ВСЕ пользователи бота.\n"
+        f"Отправить?",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
 
-async def deposit_confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Нет доступа")
+async def confirm_sendall(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение отправки рассылки"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not is_admin(query.from_user.id):
+        await query.edit_message_text("❌ Нет доступа")
         return
-    text = update.message.text.strip()
-    if text.startswith("/deposit_confirm"):
-        parts = text.split()
-        if len(parts) == 3:
-            try:
-                target_id = int(parts[1])
-                amount = float(parts[2])
-                db.update_balance(target_id, "USDT", amount, "add")
-                db.add_transaction(target_id, "deposit", "USDT", amount, "completed")
-                with db._get_connection() as conn:
-                    c = conn.cursor()
-                    c.execute("UPDATE users SET total_deposited = total_deposited + ? WHERE user_id = ?", (amount, target_id))
-                    conn.commit()
-                await context.bot.send_message(target_id, f"✅ Пополнение {amount} USDT подтверждено!", parse_mode="Markdown")
-                await update.message.reply_text(f"✅ Пополнение {amount} USDT пользователю {target_id}")
-            except Exception as e:
-                await update.message.reply_text(f"❌ Ошибка: {e}")
-
-async def admin_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает всех пользователей в базе (только для админа)"""
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Нет доступа")
+    
+    text = context.user_data.get('sendall_text')
+    if not text:
+        await query.edit_message_text("❌ Текст не найден")
         return
     
     with db._get_connection() as conn:
         c = conn.cursor()
-        c.execute("SELECT user_id, username, balance_usdt, balance_mkn, total_deposited, created_at FROM users ORDER BY created_at DESC")
-        rows = c.fetchall()
+        c.execute("SELECT user_id FROM users")
+        users = c.fetchall()
     
-    if not rows:
-        await update.message.reply_text("📭 База данных пуста")
+    if not users:
+        await query.edit_message_text("❌ Нет пользователей для рассылки")
         return
     
-    text = "📊 *Все пользователи в базе:*\n\n"
-    for row in rows:
-        text += f"🆔 `{row[0]}` | @{row[1] or 'нет'}\n"
-        text += f"   💰 USDT: {row[2]:.2f} | 💎 MKN: {row[3]:.0f}\n"
-        text += f"   📥 Депозитов: {row[4]:.2f} USDT\n"
-        text += f"   📅 {row[5][:10]}\n\n"
-        if len(text) > 3500:
-            text += "\n... и еще пользователи"
-            break
+    await query.edit_message_text(f"⏳ Начинаю рассылку {len(users)} пользователям...")
     
-    await update.message.reply_text(text, parse_mode="Markdown")
+    success = 0
+    fail = 0
     
+    for user in users:
+        try:
+            await context.bot.send_message(
+                user[0],
+                f"📢 *Сообщение от администратора*\n\n{text}",
+                parse_mode="Markdown"
+            )
+            success += 1
+            await asyncio.sleep(0.05)
+        except:
+            fail += 1
+    
+    await query.edit_message_text(
+        f"✅ *Рассылка завершена!*\n\n"
+        f"📨 Доставлено: {success}\n"
+        f"❌ Ошибок: {fail}",
+        parse_mode="Markdown"
+    )
+    
+    context.user_data.pop('sendall_text', None)
+
 # ============================================================================
 # ОБМЕННИК
 # ============================================================================
@@ -1185,12 +1047,10 @@ async def lottery_play(update: Update, context: ContextTypes.DEFAULT_TYPE, bet: 
     
     rand = random.randint(1, 100)
     multiplier = 1
-    selected_mult = None
     
     for mult, data in CONFIG.LOTTERY_MULTIPLIERS.items():
         if rand <= data['chance']:
             multiplier = data['multiplier']
-            selected_mult = mult
             break
     
     level_bonus = db.get_user_level(user_id)
@@ -1259,8 +1119,6 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.add_transaction(user_id, "daily_bonus", "MKN", bonus, "completed")
     text = f"🎁 +{bonus} MKN! Серия: {streak+1} дней" + (" 🔥 ЮБИЛЕЙ!" if streak == 6 else "")
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
-
-
 
 # ============================================================================
 # ИНВЕСТИЦИИ
@@ -1403,7 +1261,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = "📜 *Последние транзакции*\n\n"
     for tx in txns:
-        sign = "+" if tx['type'] in ['deposit', 'lottery_win', 'referral_bonus', 'admin_add', 'daily_bonus', 'roulette', 'achievement', 'invest_return'] else "-"
+        sign = "+" if tx['type'] in ['deposit', 'lottery_win', 'referral_bonus', 'admin_add', 'daily_bonus', 'achievement', 'invest_return'] else "-"
         text += f"{tx['type']}: {sign}{tx['amount']:.2f} {tx['currency']}\n"
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
@@ -1472,8 +1330,8 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         await update.message.reply_text(f"✅ Заявка #{req_id} подтверждена. Чек отправлен пользователю.")
-    except:
-        await update.message.reply_text("❌ Ошибка")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -1492,8 +1350,8 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.reject_withdraw(req_id)
         await context.bot.send_message(req['user_id'], f"❌ Заявка на вывод {req['amount']} USDT отклонена. Средства возвращены.", parse_mode="Markdown")
         await update.message.reply_text(f"✅ Заявка #{req_id} отклонена")
-    except:
-        await update.message.reply_text("❌ Ошибка")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def deposit_confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -1514,8 +1372,8 @@ async def deposit_confirm_command(update: Update, context: ContextTypes.DEFAULT_
                     conn.commit()
                 await context.bot.send_message(target_id, f"✅ Пополнение {amount} USDT подтверждено!", parse_mode="Markdown")
                 await update.message.reply_text(f"✅ Пополнение {amount} USDT пользователю {target_id}")
-            except:
-                await update.message.reply_text("❌ Ошибка")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def buy_mkn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -1535,8 +1393,8 @@ async def buy_mkn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Вы купили {order['amount']:.0f} MKN за {total:.4f} USDT")
             await context.bot.send_message(order['user_id'], f"🔔 Пользователь @{update.effective_user.username} купил {order['amount']:.0f} MKN")
             db.delete_p2p_order(order_id)
-        except:
-            await update.message.reply_text("❌ Ошибка")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def sell_mkn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -1556,8 +1414,8 @@ async def sell_mkn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ Вы продали {order['amount']:.0f} MKN за {total:.4f} USDT")
             await context.bot.send_message(order['user_id'], f"🔔 Пользователь @{update.effective_user.username} продал {order['amount']:.0f} MKN")
             db.delete_p2p_order(order_id)
-        except:
-            await update.message.reply_text("❌ Ошибка")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def cancel_p2p_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
@@ -1573,8 +1431,8 @@ async def cancel_p2p_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 return
             db.delete_p2p_order(order_id)
             await update.message.reply_text(f"✅ Объявление #{order_id} отменено")
-        except:
-            await update.message.reply_text("❌ Ошибка")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # ============================================================================
 # ОБРАБОТЧИК ТЕКСТА
@@ -1834,7 +1692,6 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("sendall", sendall_command))
-    app.add_handler(CallbackQueryHandler(confirm_sendall, pattern="^confirm_sendall$"))
     app.add_handler(CommandHandler("approve_", approve_command))
     app.add_handler(CommandHandler("reject_", reject_command))
     app.add_handler(CommandHandler("deposit_confirm", deposit_confirm_command))
@@ -1842,7 +1699,7 @@ def main():
     app.add_handler(CommandHandler("sell_mkn", sell_mkn_command))
     app.add_handler(CommandHandler("cancel_p2p", cancel_p2p_command))
     
-    
+    app.add_handler(CallbackQueryHandler(confirm_sendall, pattern="^confirm_sendall$"))
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(wallet, pattern="^wallet$"))
     app.add_handler(CallbackQueryHandler(show_user_wallet, pattern="^wallet_user$"))
@@ -1854,7 +1711,6 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_add_balance, pattern="^admin_add_balance$"))
     app.add_handler(CallbackQueryHandler(admin_gift, pattern="^admin_gift$"))
     app.add_handler(CallbackQueryHandler(admin_create_promo, pattern="^admin_create_promo$"))
-    app.add_handler(CommandHandler("debug", admin_debug))
     
     app.add_handler(CallbackQueryHandler(exchange_menu, pattern="^exchange_menu$"))
     app.add_handler(CallbackQueryHandler(buy_mkn, pattern="^buy_mkn$"))
