@@ -16,7 +16,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 @dataclass
 class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
-    ADMIN_ID: int = 8780917575
+    ADMIN_ID: int = 8343022613
     BOT_USERNAME: str = "CryptoKanS1x_bot"
     
     WITHDRAW_FEE: int = 5
