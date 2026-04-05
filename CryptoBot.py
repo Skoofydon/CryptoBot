@@ -1833,14 +1833,15 @@ def main():
     app = Application.builder().token(CONFIG.BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("sendall", sendall_command))
+    app.add_handler(CallbackQueryHandler(confirm_sendall, pattern="^confirm_sendall$"))
     app.add_handler(CommandHandler("approve_", approve_command))
     app.add_handler(CommandHandler("reject_", reject_command))
     app.add_handler(CommandHandler("deposit_confirm", deposit_confirm_command))
     app.add_handler(CommandHandler("buy_mkn", buy_mkn_command))
     app.add_handler(CommandHandler("sell_mkn", sell_mkn_command))
     app.add_handler(CommandHandler("cancel_p2p", cancel_p2p_command))
-    app.add_handler(CommandHandler("sendall", sendall_command))
-    app.add_handler(CallbackQueryHandler(confirm_sendall, pattern="^confirm_sendall$"))
+    
     
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(wallet, pattern="^wallet$"))
