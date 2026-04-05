@@ -722,6 +722,97 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"✨ *CryptoKan* ✨\n\n💰 USDT: {balances['USDT']:.4f}\n💎 MKN: {balances['MKN']:.2f}\n\n👥 Рефералов: {db.get_referral_count(user_id)}\n🎚 Уровень: +{level_bonus}%"
     await query.edit_message_text(text, reply_markup=main_keyboard, parse_mode="Markdown")
 
+# ============================================================================
+# РАССЫЛКА ОТ АДМИНА
+# ============================================================================
+
+async def sendall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет сообщение всем пользователям бота (только админ)"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Нет доступа")
+        return
+    
+    # Получаем текст после команды /sendall
+    text = update.message.text.replace("/sendall", "").strip()
+    if not text:
+        await update.message.reply_text(
+            "❌ *Как использовать:*\n"
+            "`/sendall Текст сообщения`\n\n"
+            "📌 *Пример:*\n"
+            "`/sendall Привет! У нас новый розыгрыш!`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Подтверждение перед отправкой
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, отправить", callback_data="confirm_sendall")],
+        [InlineKeyboardButton("❌ Нет, отмена", callback_data="menu")]
+    ])
+    
+    # Сохраняем текст в контексте
+    context.user_data['sendall_text'] = text
+    
+    await update.message.reply_text(
+        f"📢 *Подтверждение рассылки*\n\n"
+        f"Текст сообщения:\n"
+        f"`{text}`\n\n"
+        f"⚠️ Сообщение получат ВСЕ пользователи бота.\n"
+        f"Отправить?",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+async def confirm_sendall(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение отправки рассылки"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not is_admin(query.from_user.id):
+        await query.edit_message_text("❌ Нет доступа")
+        return
+    
+    text = context.user_data.get('sendall_text')
+    if not text:
+        await query.edit_message_text("❌ Текст не найден")
+        return
+    
+    # Получаем всех пользователей
+    with db._get_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM users")
+        users = c.fetchall()
+    
+    if not users:
+        await query.edit_message_text("❌ Нет пользователей для рассылки")
+        return
+    
+    await query.edit_message_text(f"⏳ Начинаю рассылку {len(users)} пользователям...")
+    
+    success = 0
+    fail = 0
+    
+    for user in users:
+        try:
+            await context.bot.send_message(
+                user[0],
+                f"📢 *Сообщение от администратора*\n\n{text}",
+                parse_mode="Markdown"
+            )
+            success += 1
+            await asyncio.sleep(0.05)  # Пауза, чтобы не заблокировали
+        except:
+            fail += 1
+    
+    await query.edit_message_text(
+        f"✅ *Рассылка завершена!*\n\n"
+        f"📨 Доставлено: {success}\n"
+        f"❌ Ошибок: {fail}",
+        parse_mode="Markdown"
+    )
+    
+    context.user_data.pop('sendall_text', None)
+
 async def wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1748,6 +1839,8 @@ def main():
     app.add_handler(CommandHandler("buy_mkn", buy_mkn_command))
     app.add_handler(CommandHandler("sell_mkn", sell_mkn_command))
     app.add_handler(CommandHandler("cancel_p2p", cancel_p2p_command))
+    app.add_handler(CommandHandler("sendall", sendall_command))
+app.add_handler(CallbackQueryHandler(confirm_sendall, pattern="^confirm_sendall$"))
     
     app.add_handler(CallbackQueryHandler(menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(wallet, pattern="^wallet$"))
