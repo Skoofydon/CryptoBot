@@ -797,7 +797,7 @@ async def admin_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "💸 *Заявки на вывод*\n\n"
     for w in withdraws:
         user_gets = w['amount'] - (w['amount'] * w['fee'] / 100)
-        text += f"🆔 #{w['id']} | @{w['username']}\n💰 {w['amount']} USDT → получит {user_gets:.4f}\n📤 {w['address'][:20]}...\n✅ /approve_{w['id']} | ❌ /reject_{w['id']}\n\n"
+        text += f"🆔 #{w['id']} | @{w['username']}\n💰 {w['amount']} USDT → получит {user_gets:.4f}\n✅ /approve_{w['id']} | ❌ /reject_{w['id']}\n\n"
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
 
 async def admin_investments(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -911,7 +911,7 @@ async def case_gold(update: Update, context: ContextTypes.DEFAULT_TYPE): await o
 async def case_diamond(update: Update, context: ContextTypes.DEFAULT_TYPE): await open_case(update, context, "алмазный")
 
 # ============================================================================
-# ЛОТЕРЕЯ (НОВАЯ - С ВЫБОРОМ СТАВКИ)
+# ЛОТЕРЕЯ
 # ============================================================================
 
 async def lottery_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1189,7 +1189,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = "ℹ️ *Помощь*\n\n📥 Пополнение: вручную через админа\n📤 Вывод: кошелек → вывести\n🔄 Перевод: @username 10 USDT\n💱 Обмен: /buy или /sell\n🎲 Лотерея: введи сумму → выбери множитель\n🎁 Кейсы: 3 типа\n🎡 Рулетка: бесплатно раз в день\n💼 Инвестиции: заморозка USDT\n🔄 P2P: купить/продать MKN\n🏅 Ачивки: награды за действия\n🔑 Промокод: /code КОД"
+    text = "ℹ️ *Помощь*\n\n📥 Пополнение: вручную через админа\n📤 Вывод: кошелек → вывести (чек в @CryptoBot)\n🔄 Перевод: @username 10 USDT\n💱 Обмен: /buy или /sell\n🎲 Лотерея: введи сумму → выигрывай\n🎁 Кейсы: 3 типа\n🎡 Рулетка: бесплатно раз в день\n💼 Инвестиции: заморозка USDT\n🔄 P2P: купить/продать MKN\n🏅 Ачивки: награды за действия\n🔑 Промокод: /code КОД"
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
 async def deposit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1202,7 +1202,15 @@ async def withdraw_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     awaiting_state[query.from_user.id] = "withdraw"
-    await query.edit_message_text(f"📤 Формат: АДРЕС СУММА\nМин: {CONFIG.MIN_WITHDRAW} USDT\nПример: `TVqP8Ur8f1DUUM3k4QxVxz1Qn1Gddq4VFT 10`", reply_markup=back_keyboard, parse_mode="Markdown")
+    await query.edit_message_text(
+        f"📤 *Вывод средств*\n\n"
+        f"Введи сумму в USDT (мин {CONFIG.MIN_WITHDRAW} USDT)\n"
+        f"Комиссия: {CONFIG.WITHDRAW_FEE}% (вычитается из суммы)\n"
+        f"Пример: `10`\n\n"
+        f"*После создания заявки админ отправит вам чек в @CryptoBot*",
+        reply_markup=back_keyboard,
+        parse_mode="Markdown"
+    )
 
 async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1234,8 +1242,15 @@ async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         db.approve_withdraw(req_id)
         user_gets = req['amount'] - (req['amount'] * req['fee'] / 100)
-        await context.bot.send_message(req['user_id'], f"✅ Вывод {req['amount']} USDT подтвержден! Получите {user_gets:.4f} USDT", parse_mode="Markdown")
-        await update.message.reply_text(f"✅ Заявка #{req_id} подтверждена")
+        await context.bot.send_message(
+            req['user_id'], 
+            f"✅ *Ваша заявка на вывод {req['amount']} USDT обработана!*\n\n"
+            f"💰 Получено: {user_gets:.4f} USDT\n"
+            f"📤 Чек отправлен в @CryptoBot\n\n"
+            f"Проверьте диалог с @CryptoBot",
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text(f"✅ Заявка #{req_id} подтверждена. Чек отправлен пользователю.")
     except:
         await update.message.reply_text("❌ Ошибка")
 
@@ -1254,7 +1269,7 @@ async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         db.update_balance(req['user_id'], "USDT", req['amount'], "add")
         db.reject_withdraw(req_id)
-        await context.bot.send_message(req['user_id'], f"❌ Вывод {req['amount']} USDT отклонен. Средства возвращены.", parse_mode="Markdown")
+        await context.bot.send_message(req['user_id'], f"❌ Заявка на вывод {req['amount']} USDT отклонена. Средства возвращены.", parse_mode="Markdown")
         await update.message.reply_text(f"✅ Заявка #{req_id} отклонена")
     except:
         await update.message.reply_text("❌ Ошибка")
@@ -1349,7 +1364,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = awaiting_state.get(user_id)
     
-    # Обновляем username
     user = db.get_user(user_id)
     username = update.effective_user.username or str(user_id)
     if user and user.get('username') != username:
@@ -1434,26 +1448,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         awaiting_state.pop(user_id, None)
     
     elif state == "withdraw":
-        parts = text.split()
-        if len(parts) == 2:
-            address, amount_str = parts
-            try:
-                amount = float(amount_str)
-                if amount >= CONFIG.MIN_WITHDRAW:
-                    fee = amount * CONFIG.WITHDRAW_FEE / 100
-                    if db.get_balance(user_id, "USDT") >= amount:
-                        db.update_balance(user_id, "USDT", amount, "subtract")
-                        req_id = db.add_withdraw_request(user_id, update.effective_user.username or str(user_id), amount, address, CONFIG.WITHDRAW_FEE)
-                        await update.message.reply_text(f"✅ Заявка #{req_id} на вывод {amount} USDT создана! Получите {amount - fee:.4f} USDT")
-                        await context.bot.send_message(CONFIG.ADMIN_ID, f"🔔 Заявка #{req_id} на вывод {amount} USDT от @{update.effective_user.username}\n✅ /approve_{req_id}\n❌ /reject_{req_id}")
-                    else:
-                        await update.message.reply_text("❌ Недостаточно USDT")
-                else:
-                    await update.message.reply_text(f"❌ Минимальная сумма вывода: {CONFIG.MIN_WITHDRAW} USDT")
-            except:
-                await update.message.reply_text("❌ Ошибка")
-        else:
-            await update.message.reply_text("❌ Формат: АДРЕС СУММА")
+        try:
+            amount = float(text)
+            if amount < CONFIG.MIN_WITHDRAW:
+                await update.message.reply_text(f"❌ Минимальная сумма вывода: {CONFIG.MIN_WITHDRAW} USDT")
+                return
+            
+            fee = amount * CONFIG.WITHDRAW_FEE / 100
+            user_gets = amount - fee
+            
+            if db.get_balance(user_id, "USDT") < amount:
+                await update.message.reply_text(f"❌ Недостаточно USDT. Нужно: {amount:.2f} USDT")
+                return
+            
+            db.update_balance(user_id, "USDT", amount, "subtract")
+            req_id = db.add_withdraw_request(user_id, update.effective_user.username or str(user_id), amount, "ЧЕК", CONFIG.WITHDRAW_FEE)
+            db.add_transaction(user_id, "withdraw", "USDT", amount, "pending", fee=fee, details="Вывод через чек")
+            
+            await update.message.reply_text(
+                f"✅ *Заявка на вывод #{req_id} создана!*\n\n"
+                f"💰 Сумма вывода: {amount} USDT\n"
+                f"⚡️ Комиссия (5%): {fee:.4f} USDT\n"
+                f"📤 Вы получите: {user_gets:.4f} USDT\n\n"
+                f"⏳ Администратор обработает заявку и отправит вам чек в @CryptoBot",
+                parse_mode="Markdown"
+            )
+            
+            await context.bot.send_message(
+                CONFIG.ADMIN_ID,
+                f"🔔 *НОВАЯ ЗАЯВКА НА ВЫВОД #{req_id}*\n\n"
+                f"👤 Пользователь: @{update.effective_user.username or user_id}\n"
+                f"🆔 ID: `{user_id}`\n"
+                f"💰 Сумма вывода: {amount} USDT\n"
+                f"⚡️ Комиссия 5%: {fee:.4f} USDT\n"
+                f"📤 Пользователь получит: {user_gets:.4f} USDT\n\n"
+                f"✅ Для отправки чека:\n"
+                f"1. Открой @CryptoBot → Создать чек\n"
+                f"2. Введи сумму {user_gets:.4f} USDT\n"
+                f"3. Отправь чек пользователю @{update.effective_user.username or user_id}\n"
+                f"4. После отправки введи: `/approve_{req_id}`",
+                parse_mode="Markdown"
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Введи число")
         awaiting_state.pop(user_id, None)
     
     elif state == "transfer":
