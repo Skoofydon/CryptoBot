@@ -752,7 +752,7 @@ async def show_user_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, reply_markup=keyboard, parse_mode="Markdown")
 
 # ============================================================================
-# АДМИН-ПАНЕЛЬ
+# АДМИН-ПАНЕЛЬ (ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ)
 # ============================================================================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -770,20 +770,33 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not is_admin(query.from_user.id): return
     stats = db.get_stats()
-    text = f"📊 Статистика\n👥 {stats['users']}\n💰 {stats['deposits']:.2f} USDT\n📤 {stats['withdraws']:.2f} USDT\n💎 {stats['mkn_supply']:.2f}"
+    text = f"📊 *Статистика*\n\n👥 Пользователей: {stats['users']}\n💰 Депозитов: {stats['deposits']:.2f} USDT\n📤 Выводов: {stats['withdraws']:.2f} USDT\n💎 MKN в обращении: {stats['mkn_supply']:.2f}\n🎲 Всего выиграно: {stats['total_won']:.0f} MKN"
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
 
 async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id): return
-    users = db.get_all_users()
-    if not users:
-        await query.edit_message_text("Нет пользователей", reply_markup=admin_keyboard)
+    
+    with db._get_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id, username, balance_usdt, balance_mkn, total_deposited, created_at FROM users ORDER BY created_at DESC")
+        rows = c.fetchall()
+    
+    if not rows:
+        await query.edit_message_text("📭 Нет пользователей", reply_markup=admin_keyboard)
         return
-    text = "👥 *Пользователи*\n\n"
-    for u in users[:20]:
-        text += f"🆔 {u['user_id']} | @{u['username'] or 'no'}\n   💰 {u['balance_usdt']:.2f} USDT | 💎 {u['balance_mkn']:.0f} MKN\n\n"
+    
+    text = "👥 *Все пользователи*\n\n"
+    for row in rows[:30]:
+        text += f"🆔 `{row[0]}` | @{row[1] or 'нет'}\n"
+        text += f"   💰 USDT: {row[2]:.2f} | 💎 MKN: {row[3]:.0f}\n"
+        text += f"   📥 Депозитов: {row[4]:.2f} USDT\n"
+        text += f"   📅 {row[5][:10]}\n\n"
+    
+    if len(rows) > 30:
+        text += f"... и еще {len(rows) - 30} пользователей"
+    
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
 
 async def admin_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -792,27 +805,45 @@ async def admin_withdraws(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(query.from_user.id): return
     withdraws = db.get_pending_withdraws()
     if not withdraws:
-        await query.edit_message_text("Нет заявок", reply_markup=admin_keyboard)
+        await query.edit_message_text("📭 Нет активных заявок на вывод", reply_markup=admin_keyboard)
         return
     text = "💸 *Заявки на вывод*\n\n"
     for w in withdraws:
         user_gets = w['amount'] - (w['amount'] * w['fee'] / 100)
-        text += f"🆔 #{w['id']} | @{w['username']}\n💰 {w['amount']} USDT → получит {user_gets:.4f}\n✅ /approve_{w['id']} | ❌ /reject_{w['id']}\n\n"
+        text += f"🆔 *Заявка #{w['id']}*\n"
+        text += f"👤 Пользователь: @{w['username'] or w['user_id']} | `{w['user_id']}`\n"
+        text += f"💰 Сумма вывода: {w['amount']} USDT\n"
+        text += f"⚡️ Комиссия 5%: {w['amount'] * w['fee'] / 100:.4f} USDT\n"
+        text += f"📤 Пользователь получит: {user_gets:.4f} USDT\n"
+        text += f"✅ `/approve_{w['id']}` - подтвердить\n"
+        text += f"❌ `/reject_{w['id']}` - отклонить\n\n"
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
 
 async def admin_investments(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id): return
-    invs = db.get_active_investments()
-    if not invs:
-        await query.edit_message_text("Нет активных инвестиций", reply_markup=admin_keyboard)
+    
+    with db._get_connection() as conn:
+        c = conn.cursor()
+        c.execute('''SELECT i.id, i.user_id, u.username, i.package, i.amount, i.percent, i.start_date, i.end_date, i.status
+                     FROM investments i
+                     LEFT JOIN users u ON i.user_id = u.user_id
+                     WHERE i.status = 'active'
+                     ORDER BY i.end_date ASC''')
+        rows = c.fetchall()
+    
+    if not rows:
+        await query.edit_message_text("📭 Нет активных инвестиций", reply_markup=admin_keyboard)
         return
+    
     text = "📊 *Активные инвестиции*\n\n"
-    for inv in invs:
-        user = db.get_user(inv['user_id'])
-        username = user.get('username') if user else str(inv['user_id'])
-        text += f"🆔 @{username}\n📦 {inv['package']} | {inv['amount']} USDT | +{inv['percent']}%\n📅 Завершение: {inv['end_date']}\n\n"
+    for inv in rows:
+        text += f"🆔 #{inv[0]} | @{inv[2] or inv[1]}\n"
+        text += f"📦 {inv[3]} | {inv[4]} USDT | +{inv[5]}%\n"
+        text += f"📅 Начало: {inv[6]}\n"
+        text += f"📅 Завершение: {inv[7]}\n\n"
+    
     await query.edit_message_text(text, reply_markup=admin_keyboard, parse_mode="Markdown")
 
 async def admin_add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -820,22 +851,146 @@ async def admin_add_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     if not is_admin(query.from_user.id): return
     awaiting_state[query.from_user.id] = "admin_add"
-    await query.edit_message_text("➕ Введи: ID ВАЛЮТА СУММА\nПример: `123456789 USDT 100`\nВалюты: USDT, MKN", reply_markup=admin_keyboard, parse_mode="Markdown")
+    await query.edit_message_text(
+        "➕ *Пополнение пользователя*\n\n"
+        "Введи ID пользователя, валюту и сумму через пробел:\n"
+        "Пример: `123456789 USDT 100`\n"
+        "Пример: `987654321 MKN 500`\n\n"
+        "*Где взять ID?* В разделе 👥 Все пользователи",
+        reply_markup=admin_keyboard,
+        parse_mode="Markdown"
+    )
 
 async def admin_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id): return
     awaiting_state[query.from_user.id] = "admin_gift"
-    await query.edit_message_text("🎁 Введи: ВАЛЮТА СУММА\nПример: `MKN 100`", reply_markup=admin_keyboard, parse_mode="Markdown")
+    await query.edit_message_text(
+        "🎁 *Массовый подарок*\n\n"
+        "Введи валюту и сумму через пробел:\n"
+        "Пример: `MKN 100`\n"
+        "Пример: `USDT 5`\n\n"
+        "Подарок получат ВСЕ пользователи бота.",
+        reply_markup=admin_keyboard,
+        parse_mode="Markdown"
+    )
 
 async def admin_create_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if not is_admin(query.from_user.id): return
     awaiting_state[query.from_user.id] = "admin_promo"
-    await query.edit_message_text("🔑 Формат: КОД ВАЛЮТА СУММА КОЛИЧЕСТВО\nПример: `HELLO MKN 100 50`", reply_markup=admin_keyboard, parse_mode="Markdown")
+    await query.edit_message_text(
+        "🔑 *Создание промокода*\n\n"
+        "Формат: `КОД ВАЛЮТА СУММА КОЛИЧЕСТВО`\n"
+        "Пример: `HELLO MKN 100 50`\n\n"
+        "ВАЛЮТА: MKN или USDT\n"
+        "КОЛИЧЕСТВО: сколько раз можно использовать",
+        reply_markup=admin_keyboard,
+        parse_mode="Markdown"
+    )
 
+# ============================================================================
+# АДМИН-КОМАНДЫ
+# ============================================================================
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Нет доступа")
+        return
+    text = update.message.text.strip()
+    if not text.startswith("/approve_"):
+        return
+    try:
+        req_id = int(text.replace("/approve_", ""))
+        req = db.get_withdraw_request(req_id)
+        if not req or req['status'] != 'pending':
+            await update.message.reply_text(f"❌ Заявка #{req_id} не найдена или уже обработана")
+            return
+        db.approve_withdraw(req_id)
+        user_gets = req['amount'] - (req['amount'] * req['fee'] / 100)
+        await context.bot.send_message(
+            req['user_id'], 
+            f"✅ *Ваша заявка на вывод {req['amount']} USDT обработана!*\n\n"
+            f"💰 Получено: {user_gets:.4f} USDT\n"
+            f"📤 Чек отправлен в @CryptoBot\n\n"
+            f"Проверьте диалог с @CryptoBot",
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text(f"✅ Заявка #{req_id} подтверждена. Чек отправлен пользователю.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def reject_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Нет доступа")
+        return
+    text = update.message.text.strip()
+    if not text.startswith("/reject_"):
+        return
+    try:
+        req_id = int(text.replace("/reject_", ""))
+        req = db.get_withdraw_request(req_id)
+        if not req or req['status'] != 'pending':
+            await update.message.reply_text(f"❌ Заявка #{req_id} не найдена или уже обработана")
+            return
+        db.update_balance(req['user_id'], "USDT", req['amount'], "add")
+        db.reject_withdraw(req_id)
+        await context.bot.send_message(req['user_id'], f"❌ Заявка на вывод {req['amount']} USDT отклонена. Средства возвращены.", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Заявка #{req_id} отклонена")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def deposit_confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Нет доступа")
+        return
+    text = update.message.text.strip()
+    if text.startswith("/deposit_confirm"):
+        parts = text.split()
+        if len(parts) == 3:
+            try:
+                target_id = int(parts[1])
+                amount = float(parts[2])
+                db.update_balance(target_id, "USDT", amount, "add")
+                db.add_transaction(target_id, "deposit", "USDT", amount, "completed")
+                with db._get_connection() as conn:
+                    c = conn.cursor()
+                    c.execute("UPDATE users SET total_deposited = total_deposited + ? WHERE user_id = ?", (amount, target_id))
+                    conn.commit()
+                await context.bot.send_message(target_id, f"✅ Пополнение {amount} USDT подтверждено!", parse_mode="Markdown")
+                await update.message.reply_text(f"✅ Пополнение {amount} USDT пользователю {target_id}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def admin_debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает всех пользователей в базе (только для админа)"""
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Нет доступа")
+        return
+    
+    with db._get_connection() as conn:
+        c = conn.cursor()
+        c.execute("SELECT user_id, username, balance_usdt, balance_mkn, total_deposited, created_at FROM users ORDER BY created_at DESC")
+        rows = c.fetchall()
+    
+    if not rows:
+        await update.message.reply_text("📭 База данных пуста")
+        return
+    
+    text = "📊 *Все пользователи в базе:*\n\n"
+    for row in rows:
+        text += f"🆔 `{row[0]}` | @{row[1] or 'нет'}\n"
+        text += f"   💰 USDT: {row[2]:.2f} | 💎 MKN: {row[3]:.0f}\n"
+        text += f"   📥 Депозитов: {row[4]:.2f} USDT\n"
+        text += f"   📅 {row[5][:10]}\n\n"
+        if len(text) > 3500:
+            text += "\n... и еще пользователи"
+            break
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+    
 # ============================================================================
 # ОБМЕННИК
 # ============================================================================
@@ -1630,6 +1785,7 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_add_balance, pattern="^admin_add_balance$"))
     app.add_handler(CallbackQueryHandler(admin_gift, pattern="^admin_gift$"))
     app.add_handler(CallbackQueryHandler(admin_create_promo, pattern="^admin_create_promo$"))
+    app.add_handler(CommandHandler("debug", admin_debug))
     
     app.add_handler(CallbackQueryHandler(exchange_menu, pattern="^exchange_menu$"))
     app.add_handler(CallbackQueryHandler(buy_mkn, pattern="^buy_mkn$"))
