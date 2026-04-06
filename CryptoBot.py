@@ -16,7 +16,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 @dataclass
 class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
-    ADMIN_ID: int = 8343022613
+    ADMIN_ID: int = 8780917575
     BOT_USERNAME: str = "CryptoKanS1x_bot"
     
     WITHDRAW_FEE: int = 5
@@ -76,7 +76,6 @@ class Config:
                 "gambler": {"name": "🎲 Азартный", "desc": "Открыть 50 кейсов", "reward": 300},
                 "millionaire": {"name": "💎 Миллионер", "desc": "Баланс 1M+ MKN", "reward": 5000},
                 "collector": {"name": "📦 Коллекционер", "desc": "Открыть 100 кейсов", "reward": 1000},
-                "fortune": {"name": "🎡 Фортуна", "desc": "Выиграть в рулетке 5000+ MKN", "reward": 500},
                 "investor": {"name": "💼 Инвестор", "desc": "Вложить 500+ USDT", "reward": 1000}
             }
 
@@ -113,7 +112,6 @@ class Database:
                 total_withdrawn REAL DEFAULT 0,
                 total_won REAL DEFAULT 0,
                 cases_opened INTEGER DEFAULT 0,
-                roulette_max_win REAL DEFAULT 0,
                 daily_streak INTEGER DEFAULT 0,
                 last_daily DATE,
                 first_deposit_bonus INTEGER DEFAULT 0,
@@ -848,7 +846,7 @@ async def admin_create_promo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     awaiting_state[query.from_user.id] = "admin_promo"
     await query.edit_message_text(
         "🔑 *Создание промокода*\n\n"
-        "Формат: `КОД ВАЛЮТА СУММА КОЛИЧЕСТВО`\n"
+        "Введи данные в формате: `КОД ВАЛЮТА СУММА КОЛИЧЕСТВО`\n"
         "Пример: `HELLO MKN 100 50`\n\n"
         "ВАЛЮТА: MKN или USDT\n"
         "КОЛИЧЕСТВО: сколько раз можно использовать",
@@ -1268,7 +1266,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = "ℹ️ *Помощь*\n\n📥 Пополнение: вручную через админа\n📤 Вывод: кошелек → вывести (чек в @CryptoBot)\n🔄 Перевод: @username 10 USDT\n💱 Обмен: /buy или /sell\n🎲 Лотерея: введи сумму → выигрывай\n🎁 Кейсы: 3 типа\n🎡 Рулетка: бесплатно раз в день\n💼 Инвестиции: заморозка USDT\n🔄 P2P: купить/продать MKN\n🏅 Ачивки: награды за действия\n🔑 Промокод: /code КОД"
+    text = "ℹ️ *Помощь*\n\n📥 Пополнение: вручную через админа\n📤 Вывод: кошелек → вывести (чек в @CryptoBot)\n🔄 Перевод: @username 10 USDT\n💱 Обмен: /buy или /sell\n🎲 Лотерея: введи сумму → выигрывай\n🎁 Кейсы: 3 типа\n💼 Инвестиции: заморозка USDT\n🔄 P2P: купить/продать MKN\n🏅 Ачивки: награды за действия\n🔑 Промокод: /code КОД"
     await query.edit_message_text(text, reply_markup=back_keyboard, parse_mode="Markdown")
 
 async def deposit_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1511,6 +1509,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("❌ Такой код уже есть")
             except:
                 await update.message.reply_text("❌ Ошибка")
+        else:
+            await update.message.reply_text("❌ Неверный формат. Используй: КОД ВАЛЮТА СУММА КОЛИЧЕСТВО")
         awaiting_state.pop(user_id, None)
     
     # Пользовательские команды
