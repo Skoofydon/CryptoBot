@@ -16,7 +16,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 @dataclass
 class Config:
     BOT_TOKEN: str = "8780917575:AAF5QjqH2v3YZNMS1M1rs200T0nVPTY_FVY"
-    ADMIN_ID: int = 8343022613
+    ADMIN_ID: int = 8780917575
     BOT_USERNAME: str = "CryptoKanS1x_bot"
     
     WITHDRAW_FEE: int = 5
@@ -859,20 +859,13 @@ async def admin_create_promo(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ============================================================================
 
 async def sendall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет сообщение всем пользователям бота (только админ)"""
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ Нет доступа")
         return
     
     text = update.message.text.replace("/sendall", "").strip()
     if not text:
-        await update.message.reply_text(
-            "❌ *Как использовать:*\n"
-            "`/sendall Текст сообщения`\n\n"
-            "📌 *Пример:*\n"
-            "`/sendall Привет! У нас новый розыгрыш!`",
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("❌ Используй: `/sendall Текст сообщения`", parse_mode="Markdown")
         return
     
     keyboard = InlineKeyboardMarkup([
@@ -884,16 +877,14 @@ async def sendall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"📢 *Подтверждение рассылки*\n\n"
-        f"Текст сообщения:\n"
-        f"`{text}`\n\n"
-        f"⚠️ Сообщение получат ВСЕ пользователи бота.\n"
+        f"Текст: `{text}`\n\n"
+        f"⚠️ Сообщение получат ВСЕ пользователи.\n"
         f"Отправить?",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
 
 async def confirm_sendall(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подтверждение отправки рассылки"""
     query = update.callback_query
     await query.answer()
     
@@ -912,10 +903,10 @@ async def confirm_sendall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users = c.fetchall()
     
     if not users:
-        await query.edit_message_text("❌ Нет пользователей для рассылки")
+        await query.edit_message_text("❌ Нет пользователей")
         return
     
-    await query.edit_message_text(f"⏳ Начинаю рассылку {len(users)} пользователям...")
+    await query.edit_message_text(f"⏳ Рассылка {len(users)} пользователям...")
     
     success = 0
     fail = 0
@@ -1022,8 +1013,7 @@ async def case_diamond(update: Update, context: ContextTypes.DEFAULT_TYPE): awai
 async def lottery_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = f"🎲 *Лотерея*\n\n"
-    text += f"💰 *Шансы выигрыша:*\n"
+    text = f"🎲 *Лотерея*\n\n💰 *Шансы выигрыша:*\n"
     for mult, data in CONFIG.LOTTERY_MULTIPLIERS.items():
         text += f"  • x{mult} — {data['chance']}%\n"
     text += f"\n📊 *Кэшбэк:* 10% от проигрыша (начислится завтра)\n"
@@ -1671,6 +1661,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Формат: buy 1000 0.95")
         awaiting_state.pop(user_id, None)
     
+    # ПРОМОКОДЫ - ЭТА ЧАСТЬ ДОЛЖНА БЫТЬ
     elif text.startswith("/code "):
         code = text.replace("/code ", "").strip().upper()
         promo = db.use_promo_code(code, user_id)
